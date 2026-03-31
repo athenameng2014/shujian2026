@@ -1,0 +1,176 @@
+import { create } from 'zustand'
+import { v4 as uuid } from 'uuid'
+import type { Book, Log, Topic, TopicBook } from '../types'
+import * as db from '../db'
+
+// 预设的代表色（莫兰迪底色 + 高饱和跳色混搭）
+const BOOK_COLORS = [
+  '#E8654A', '#3D7C98', '#5B9E6F', '#E5A93D',
+  '#9B5DE5', '#E07A5F', '#81B29A', '#c4956a',
+  '#4ECDC4', '#FF6B9D', '#F2CC8F', '#6C8EBF',
+]
+
+function pickColor(existingBooks: Book[]): string {
+  const used = new Set(existingBooks.map((b) => b.color))
+  const available = BOOK_COLORS.filter((c) => !used.has(c))
+  return available[Math.floor(Math.random() * available.length)] ?? BOOK_COLORS[0]
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = reject
+    reader.readAsDataURL(blob)
+  })
+}
+
+interface BookState {
+  books: Book[]
+  load: () => Promise<void>
+  addBook: (input: { title: string; author?: string; coverUrl?: string; coverBlob?: Blob; isFiction?: boolean }) => Promise<Book>
+  updateBook: (book: Book) => Promise<void>
+  removeBook: (id: string) => Promise<void>
+}
+
+export const useBookStore = create<BookState>((set, get) => ({
+  books: [],
+  load: async () => {
+    const books = await db.getAllBooks()
+    set({ books })
+  },
+  addBook: async (input) => {
+    let coverUrl = input.coverUrl
+    if (!coverUrl && input.coverBlob) {
+      coverUrl = await blobToDataUrl(input.coverBlob)
+    }
+    const book: Book = {
+      id: uuid(),
+      title: input.title,
+      author: input.author,
+      coverUrl,
+      color: pickColor(get().books),
+      isFiction: input.isFiction,
+      createdAt: Date.now(),
+    }
+    await db.saveBook(book)
+    set((s) => ({ books: [book, ...s.books] }))
+    return book
+  },
+  updateBook: async (book) => {
+    await db.saveBook(book)
+    set((s) => ({ books: s.books.map((b) => (b.id === book.id ? book : b)) }))
+  },
+  removeBook: async (id) => {
+    await db.deleteBook(id)
+    set((s) => ({ books: s.books.filter((b) => b.id !== id) }))
+  },
+}))
+
+interface LogState {
+  logs: Log[]
+  bookIdsWithLogs: Set<string>
+  loadMonth: (yearMonth: string) => Promise<void>
+  refreshBookIdsWithLogs: () => Promise<void>
+  addLog: (input: { bookId: string; date: string; note?: string }) => Promise<Log>
+  updateLog: (log: Log) => Promise<void>
+  removeLog: (id: string) => Promise<void>
+}
+
+export const useLogStore = create<LogState>((set) => ({
+  logs: [],
+  bookIdsWithLogs: new Set(),
+  loadMonth: async (yearMonth) => {
+    const logs = await db.getLogsByMonth(yearMonth)
+    set({ logs })
+  },
+  refreshBookIdsWithLogs: async () => {
+    const bookIdsWithLogs = await db.getBookIdsWithLogs()
+    set({ bookIdsWithLogs })
+  },
+  addLog: async (input) => {
+    const log: Log = { id: uuid(), ...input, createdAt: Date.now() }
+    await db.saveLog(log)
+    const bookIdsWithLogs = await db.getBookIdsWithLogs()
+    set((s) => ({ logs: [log, ...s.logs], bookIdsWithLogs }))
+    return log
+  },
+  updateLog: async (log) => {
+    await db.saveLog(log)
+    set((s) => ({ logs: s.logs.map((l) => (l.id === log.id ? log : l)) }))
+  },
+  removeLog: async (id) => {
+    await db.deleteLog(id)
+    const bookIdsWithLogs = await db.getBookIdsWithLogs()
+    set((s) => ({ logs: s.logs.filter((l) => l.id !== id), bookIdsWithLogs }))
+  },
+}))
+
+// ── Topic Store ──
+
+interface TopicState {
+  topics: Topic[]
+  topicBooks: TopicBook[]
+  loadTopics: () => Promise<void>
+  loadTopicBooks: (topicId: string) => Promise<void>
+  addTopic: (name: string, description?: string) => Promise<Topic>
+  updateTopic: (topic: Topic) => Promise<void>
+  removeTopic: (id: string) => Promise<void>
+  addBookToTopic: (topicId: string, bookId: string, status?: TopicBook['status']) => Promise<void>
+  updateTopicBook: (tb: TopicBook) => Promise<void>
+  removeBookFromTopic: (topicId: string, bookId: string) => Promise<void>
+}
+
+export const useTopicStore = create<TopicState>((set) => ({
+  topics: [],
+  topicBooks: [],
+  loadTopics: async () => {
+    const topics = await db.getAllTopics()
+    set({ topics })
+  },
+  loadTopicBooks: async (topicId) => {
+    const topicBooks = await db.getTopicBooks(topicId)
+    set({ topicBooks })
+  },
+  addTopic: async (name, description) => {
+    const topic: Topic = { id: uuid(), name, description, bookIds: [], createdAt: Date.now() }
+    await db.saveTopic(topic)
+    set((s) => ({ topics: [topic, ...s.topics] }))
+    return topic
+  },
+  updateTopic: async (topic) => {
+    await db.saveTopic(topic)
+    set((s) => ({ topics: s.topics.map((t) => (t.id === topic.id ? topic : t)) }))
+  },
+  removeTopic: async (id) => {
+    await db.deleteTopic(id)
+    set((s) => ({ topics: s.topics.filter((t) => t.id !== id) }))
+  },
+  addBookToTopic: async (topicId, bookId, status = 'want') => {
+    const tb: TopicBook = { topicId, bookId, status }
+    await db.saveTopicBook(tb)
+    // Update topic.bookIds
+    const topic = await db.getAllTopics().then((ts) => ts.find((t) => t.id === topicId))
+    if (topic && !topic.bookIds.includes(bookId)) {
+      topic.bookIds = [...topic.bookIds, bookId]
+      await db.saveTopic(topic)
+    }
+    set((s) => ({
+      topicBooks: [...s.topicBooks.filter((x) => !(x.topicId === topicId && x.bookId === bookId)), tb],
+      topics: s.topics.map((t) => t.id === topicId ? { ...t, bookIds: [...new Set([...t.bookIds, bookId])] } : t),
+    }))
+  },
+  updateTopicBook: async (tb) => {
+    await db.saveTopicBook(tb)
+    set((s) => ({
+      topicBooks: s.topicBooks.map((x) => (x.topicId === tb.topicId && x.bookId === tb.bookId ? tb : x)),
+    }))
+  },
+  removeBookFromTopic: async (topicId, bookId) => {
+    await db.deleteTopicBook(topicId, bookId)
+    set((s) => ({
+      topicBooks: s.topicBooks.filter((x) => !(x.topicId === topicId && x.bookId === bookId)),
+      topics: s.topics.map((t) => t.id === topicId ? { ...t, bookIds: t.bookIds.filter((id) => id !== bookId) } : t),
+    }))
+  },
+}))

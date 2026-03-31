@@ -1,0 +1,100 @@
+@import "tailwindcss";
+
+/* ── Custom Theme ── */
+@theme {
+  /* Morandi base */
+  --color-bg: #faf9f7;
+  --color-surface: #ffffff;
+  --color-text: #2c2a28;
+  --color-text-secondary: #8a8680;
+  --color-border: #ebe8e3;
+
+  /* Morandi accent (warm terracotta) */
+  --color-accent: #c4956a;
+  --color-accent-light: #f5ece3;
+
+  /* Vibrant jump colors (高饱和跳色) */
+  --color-coral: #E8654A;
+  --color-coral-light: #FDE8E3;
+  --color-ocean: #3D7C98;
+  --color-ocean-light: #E1EFF5;
+  --color-sage: #5B9E6F;
+  --color-sage-light: #E3F2E8;
+  --color-sun: #E5A93D;
+  --color-sun-light: #FDF3E0;
+  --color-berry: #9B5DE5;
+  --color-berry-light: #F0E6FD;
+
+  --font-sans: "Inter", "PingFang SC", "Noto Sans SC", system-ui, -apple-system, sans-serif;
+}
+
+/* ── Base Reset ── */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+html {
+  font-family: var(--font-sans);
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  overscroll-behavior: none;
+}
+
+#root {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Utility: decorative gradient blobs ── */
+.blob-coral {
+  background: radial-gradient(circle at 30% 30%, var(--color-coral-light) 0%, transparent 70%);
+}
+.blob-ocean {
+  background: radial-gradient(circle at 70% 60%, var(--color-ocean-light) 0%, transparent 70%);
+}
+.blob-sage {
+  background: radial-gradient(circle at 50% 50%, var(--color-sage-light) 0%, transparent 70%);
+}
+
+/* ── Star Map Animations ── */
+@keyframes glow-breathe {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.65; }
+}
+
+@keyframes star-beam-draw {
+  from { stroke-dashoffset: 200; }
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes star-node-reveal {
+  0% { opacity: 0; r: 2; }
+  60% { opacity: 1; r: 9; }
+  100% { opacity: 1; r: 8; }
+}
+
+@keyframes star-glow-pulse {
+  0%, 100% { opacity: 0.06; }
+  50% { opacity: 0.15; }
+}
+
+.star-beam-animated {
+  stroke-dasharray: 200;
+  animation: star-beam-draw 0.8s ease-out forwards;
+}
+
+.star-node-reveal {
+  animation: star-node-reveal 0.4s ease-out forwards;
+}
+
+.star-node-glow {
+  animation: star-glow-pulse 3s ease-in-out infinite;
+}
