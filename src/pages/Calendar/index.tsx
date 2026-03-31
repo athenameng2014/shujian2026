@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useBookStore, useLogStore, useTopicStore } from '../../store'
-import * as db from '../../db'
 import MonthView from '../../components/Calendar/MonthView'
 import BookSearch from '../../components/Book/BookSearch'
 import CheckInModal from '../../components/CheckIn/CheckInModal'
