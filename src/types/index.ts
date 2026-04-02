@@ -24,6 +24,8 @@ export interface Topic {
   createdAt: number
   /** AI 生成的星图数据（Phase 1） */
   starMapData?: StarMapData
+  /** 正在生成中的任务 ID（用于断点恢复） */
+  starMapJobId?: string
 }
 
 export type BookStatus = 'default' | 'reading' | 'finished'
@@ -35,6 +37,8 @@ export interface TopicBook {
   insight?: string
   /** AI 判定该书点亮的节点 ID（Phase 2） */
   litNodeIds: string[]
+  /** 正在映射中的任务 ID（用于断点恢复） */
+  mappingJobId?: string
 }
 
 // ── Knowledge Star Map ──

@@ -1,38 +1,74 @@
 /**
- * Local development API server
- * Mirrors the Vercel Serverless Functions for local use with `npm run dev`
+ * API server — runs locally (dev) and on Render (production)
+ * AI endpoints use async fire-and-forget pattern to bypass timeout limits.
  */
+import { randomUUID } from 'crypto'
 import express from 'express'
 import dotenv from 'dotenv'
 import { Agent, setGlobalDispatcher } from 'undici'
 
-// Set a custom undici dispatcher with very long timeouts for slow AI responses
 setGlobalDispatcher(new Agent({
-  headersTimeout: 600_000, // 10 minutes to receive headers
-  bodyTimeout: 600_000,    // 10 minutes to receive full body
+  headersTimeout: 600_000,
+  bodyTimeout: 600_000,
   keepAliveTimeout: 60_000,
   keepAliveMaxTimeout: 600_000,
 }))
 
-// Load .env.local
 dotenv.config({ path: '.env.local' })
 
 const app = express()
 app.use(express.json())
 
+// ── CORS (production: client on Vercel calls this Render server) ──
+app.use((req, res, next) => {
+  const origin = req.headers.origin
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Access-Control-Allow-Credentials', 'true')
+  }
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    return res.sendStatus(204)
+  }
+  next()
+})
+
 const ZHIPU_API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
 const CATEGORY_COLORS = ['#3D7C98', '#E8654A', '#9B5DE5', '#5B9E6F', '#E5A93D']
 
-// ── Phase 1: Generate Star Map ──
+// ── Job Management ──
 
-app.post('/api/generate-star-map', async (req, res) => {
-  const { topicName, description } = req.body as { topicName: string; description?: string }
-  if (!topicName) return res.status(400).json({ error: 'topicName is required' })
+interface AIJob {
+  status: 'pending' | 'done' | 'failed'
+  result?: unknown
+  error?: string
+  createdAt: number
+}
+const jobs = new Map<string, AIJob>()
 
-  const apiKey = process.env.ZHIPU_API_KEY
-  if (!apiKey) return res.status(500).json({ error: 'ZHIPU_API_KEY not configured' })
+// Cleanup old jobs every minute (30-min TTL for completed jobs)
+setInterval(() => {
+  const cutoff = Date.now() - 30 * 60 * 1000
+  for (const [id, job] of jobs) {
+    if (job.status !== 'pending' && job.createdAt < cutoff) jobs.delete(id)
+  }
+}, 60_000)
 
-  const prompt = `角色设定：
+app.get('/api/job-status/:jobId', (req, res) => {
+  const job = jobs.get(req.params.jobId)
+  if (!job) return res.status(404).json({ error: 'Job not found or expired' })
+  res.json({
+    status: job.status,
+    result: job.status === 'done' ? job.result : undefined,
+    error: job.status === 'failed' ? job.error : undefined,
+  })
+})
+
+// ── Phase 1: Generate Star Map (async) ──
+
+function buildStarMapPrompt(topicName: string, description?: string): string {
+  return `角色设定：
 你是一位渊博且严谨的知识架构师，正在为一个阅读类应用构建「知识星图」——一个将学习路径可视化的专题导航系统。
 
 用户输入目标专题：【${topicName}】${description ? `\n专题描述：${description}` : ''}
@@ -69,72 +105,223 @@ app.post('/api/generate-star-map', async (req, res) => {
     }
   ]
 }`
+}
 
-  try {
-    const response = await fetch(ZHIPU_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'glm-4.7',
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.7,
-        response_format: { type: 'json_object' },
-        max_tokens: 16384,
-      }),
-    })
+async function generateStarMapJob(
+  jobId: string,
+  topicName: string,
+  description: string | undefined,
+  apiKey: string,
+): Promise<void> {
+  const prompt = buildStarMapPrompt(topicName, description)
 
-    if (!response.ok) {
-      const errText = await response.text()
-      console.error('ZhiPu API error:', response.status, errText)
-      return res.status(502).json({ error: 'LLM API call failed', detail: errText })
-    }
+  const response = await fetch(ZHIPU_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: 'glm-4.7',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.7,
+      response_format: { type: 'json_object' },
+      max_tokens: 16384,
+    }),
+  })
 
-    const data = await response.json()
-    const content = data.choices?.[0]?.message?.content
-    if (!content) {
-      console.error('Empty content. Reasoning:', data.choices?.[0]?.message?.reasoning_content?.slice(0, 200))
-      return res.status(502).json({ error: 'Empty LLM response' })
-    }
-
-    let parsed: { topic: string; sub_disciplines: Array<{ id: string; name: string; nodes: Array<{ id: string; name: string; description: string; recommended_books?: Array<{ title: string; author?: string }> }> }> }
-    try {
-      parsed = JSON.parse(content)
-    } catch {
-      const jsonMatch = content.match(/\{[\s\S]*\}/)
-      if (!jsonMatch) return res.status(502).json({ error: 'Invalid JSON from LLM', raw: content })
-      parsed = JSON.parse(jsonMatch[0])
-    }
-
-    const categories = (parsed.sub_disciplines ?? []).map((sub, i) => ({
-      name: sub.name,
-      color: CATEGORY_COLORS[i % CATEGORY_COLORS.length],
-      nodes: (sub.nodes ?? []).map((node, j) => ({
-        id: node.id,
-        name: node.name,
-        description: node.description,
-        categoryIndex: i,
-        linkedBookIds: [],
-        recommendedBooks: node.recommended_books?.slice(0, 3) ?? [],
-      })),
-    }))
-
-    const totalNodes = categories.reduce((s, c) => s + c.nodes.length, 0)
-    console.log(`Star map generated: ${categories.length} categories, ${totalNodes} total nodes`)
-
-    const starMapData = {
-      topicName: parsed.topic || topicName,
-      topicId: `ai-${Date.now()}`,
-      categories,
-    }
-
-    res.json({ starMapData })
-  } catch (err) {
-    console.error('generate-star-map error:', err)
-    res.status(500).json({ error: 'Internal server error' })
+  if (!response.ok) {
+    const errText = await response.text()
+    console.error('ZhiPu API error:', response.status, errText)
+    jobs.set(jobId, { status: 'failed', error: 'LLM API call failed', createdAt: Date.now() })
+    return
   }
+
+  const data = await response.json()
+  const content = data.choices?.[0]?.message?.content
+  if (!content) {
+    console.error('Empty content. Reasoning:', data.choices?.[0]?.message?.reasoning_content?.slice(0, 200))
+    jobs.set(jobId, { status: 'failed', error: 'Empty LLM response', createdAt: Date.now() })
+    return
+  }
+
+  let parsed: {
+    topic: string
+    sub_disciplines: Array<{
+      id: string
+      name: string
+      nodes: Array<{
+        id: string
+        name: string
+        description: string
+        recommended_books?: Array<{ title: string; author?: string }>
+      }>
+    }>
+  }
+  try {
+    parsed = JSON.parse(content)
+  } catch {
+    const jsonMatch = content.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) {
+      jobs.set(jobId, { status: 'failed', error: 'Invalid JSON from LLM', createdAt: Date.now() })
+      return
+    }
+    parsed = JSON.parse(jsonMatch[0])
+  }
+
+  const categories = (parsed.sub_disciplines ?? []).map((sub, i) => ({
+    name: sub.name,
+    color: CATEGORY_COLORS[i % CATEGORY_COLORS.length],
+    nodes: (sub.nodes ?? []).map((node) => ({
+      id: node.id,
+      name: node.name,
+      description: node.description,
+      categoryIndex: i,
+      linkedBookIds: [] as string[],
+      recommendedBooks: node.recommended_books?.slice(0, 3) ?? [],
+    })),
+  }))
+
+  const totalNodes = categories.reduce((s: number, c) => s + c.nodes.length, 0)
+  console.log(`Star map generated: ${categories.length} categories, ${totalNodes} total nodes`)
+
+  const starMapData = {
+    topicName: parsed.topic || topicName,
+    topicId: `ai-${Date.now()}`,
+    categories,
+  }
+
+  jobs.set(jobId, { status: 'done', result: { starMapData }, createdAt: Date.now() })
+}
+
+app.post('/api/generate-star-map', async (req, res) => {
+  const { topicName, description } = req.body as { topicName: string; description?: string }
+  if (!topicName) return res.status(400).json({ error: 'topicName is required' })
+
+  const apiKey = process.env.ZHIPU_API_KEY
+  if (!apiKey) return res.status(500).json({ error: 'ZHIPU_API_KEY not configured' })
+
+  const jobId = randomUUID()
+  jobs.set(jobId, { status: 'pending', createdAt: Date.now() })
+
+  res.json({ jobId })
+
+  generateStarMapJob(jobId, topicName, description, apiKey).catch((err) => {
+    console.error('Background star-map job failed:', err)
+    jobs.set(jobId, { status: 'failed', error: 'Internal server error', createdAt: Date.now() })
+  })
+})
+
+// ── Phase 2: Map Book to Nodes (async) ──
+
+function buildBookNodesPrompt(
+  bookTitle: string,
+  bookAuthor?: string,
+  bookDescription?: string,
+  unlitNodes?: Array<{ id: string; name: string; description: string }>,
+): string {
+  const nodesJson = JSON.stringify(unlitNodes, null, 2)
+  return `角色设定：
+你是一个知识提炼工程师。你需要判断一本特定书籍的内核理念，是否覆盖了某个"知识星图"中的既定节点。
+
+输入数据：
+1. 待录入书籍标题：【${bookTitle}】${bookAuthor ? `\n   作者：${bookAuthor}` : ''}
+${bookDescription ? `2. 书籍摘要/梗概：${bookDescription}` : '2. 书籍摘要：无（请根据你的背景知识判断该书籍的核心内容）'}
+3. 当前星图待点亮节点列表 JSON：
+${nodesJson}
+
+任务要求：
+1. 分析书籍的核心主旨，提取它能显著解答、印证或探讨的理念。
+2. 从"星图待点亮节点列表"中，找出哪些节点与该书籍主旨有着高度的相关性。
+3. 门槛宁缺毋滥，如果相关性弱于 60%，请不要将节点算在内。一本书最多能点亮 4 个核心节点。
+4. 如果没有符合条件的节点，返回空数组。
+
+强制输出格式：
+严格以合法的 JSON 数组输出被点亮节点的 id，不需要任何其他文字（不需要代码块标记）：
+
+["node_x_y", "node_z_w"]`
+}
+
+async function mapBookNodesJob(
+  jobId: string,
+  bookTitle: string,
+  bookAuthor: string | undefined,
+  bookDescription: string | undefined,
+  unlitNodes: Array<{ id: string; name: string; description: string }>,
+  apiKey: string,
+): Promise<void> {
+  const prompt = buildBookNodesPrompt(bookTitle, bookAuthor, bookDescription, unlitNodes)
+
+  const response = await fetch(ZHIPU_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: 'glm-4.7',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.1,
+      max_tokens: 8192,
+    }),
+  })
+
+  if (!response.ok) {
+    const errText = await response.text()
+    console.error('ZhiPu API error:', response.status, errText)
+    jobs.set(jobId, { status: 'failed', error: 'LLM API call failed', createdAt: Date.now() })
+    return
+  }
+
+  const data = await response.json()
+  const content = data.choices?.[0]?.message?.content?.trim()
+  if (!content) {
+    jobs.set(jobId, { status: 'failed', error: 'Empty LLM response', createdAt: Date.now() })
+    return
+  }
+
+  let litNodeIds: string[]
+  try {
+    litNodeIds = JSON.parse(content)
+  } catch {
+    const match = content.match(/\[[\s\S]*\]/)
+    if (!match) {
+      jobs.set(jobId, { status: 'failed', error: 'Invalid JSON from LLM', createdAt: Date.now() })
+      return
+    }
+    litNodeIds = JSON.parse(match[0])
+  }
+
+  const validIds = new Set(unlitNodes.map((n) => n.id))
+  const filtered = litNodeIds.filter((id: string) => validIds.has(id))
+
+  jobs.set(jobId, { status: 'done', result: { litNodeIds: filtered }, createdAt: Date.now() })
+}
+
+app.post('/api/map-book-nodes', async (req, res) => {
+  const { bookTitle, bookAuthor, bookDescription, unlitNodes } = req.body as {
+    bookTitle: string
+    bookAuthor?: string
+    bookDescription?: string
+    unlitNodes: Array<{ id: string; name: string; description: string }>
+  }
+
+  if (!bookTitle || !unlitNodes?.length) {
+    return res.status(400).json({ error: 'bookTitle and unlitNodes are required' })
+  }
+
+  const apiKey = process.env.ZHIPU_API_KEY
+  if (!apiKey) return res.status(500).json({ error: 'ZHIPU_API_KEY not configured' })
+
+  const jobId = randomUUID()
+  jobs.set(jobId, { status: 'pending', createdAt: Date.now() })
+
+  res.json({ jobId })
+
+  mapBookNodesJob(jobId, bookTitle, bookAuthor, bookDescription, unlitNodes, apiKey).catch((err) => {
+    console.error('Background book-nodes job failed:', err)
+    jobs.set(jobId, { status: 'failed', error: 'Internal server error', createdAt: Date.now() })
+  })
 })
 
 // ── Book Search (Douban) ──
@@ -189,8 +376,6 @@ app.get('/api/cover', async (req, res) => {
 
     if (!response.ok) return res.status(502).json({ error: 'Cover fetch failed' })
 
-    if (!response.ok) return res.status(502).json({ error: 'Cover fetch failed' })
-
     const buffer = await response.arrayBuffer()
     const contentType = response.headers.get('content-type') || 'image/jpeg'
 
@@ -203,90 +388,7 @@ app.get('/api/cover', async (req, res) => {
   }
 })
 
-// ── Phase 2: Map Book to Nodes ──
-
-app.post('/api/map-book-nodes', async (req, res) => {
-  const { bookTitle, bookAuthor, bookDescription, unlitNodes } = req.body as {
-    bookTitle: string
-    bookAuthor?: string
-    bookDescription?: string
-    unlitNodes: Array<{ id: string; name: string; description: string }>
-  }
-
-  if (!bookTitle || !unlitNodes?.length) {
-    return res.status(400).json({ error: 'bookTitle and unlitNodes are required' })
-  }
-
-  const apiKey = process.env.ZHIPU_API_KEY
-  if (!apiKey) return res.status(500).json({ error: 'ZHIPU_API_KEY not configured' })
-
-  const nodesJson = JSON.stringify(unlitNodes, null, 2)
-
-  const prompt = `角色设定：
-你是一个知识提炼工程师。你需要判断一本特定书籍的内核理念，是否覆盖了某个"知识星图"中的既定节点。
-
-输入数据：
-1. 待录入书籍标题：【${bookTitle}】${bookAuthor ? `\n   作者：${bookAuthor}` : ''}
-${bookDescription ? `2. 书籍摘要/梗概：${bookDescription}` : '2. 书籍摘要：无（请根据你的背景知识判断该书籍的核心内容）'}
-3. 当前星图待点亮节点列表 JSON：
-${nodesJson}
-
-任务要求：
-1. 分析书籍的核心主旨，提取它能显著解答、印证或探讨的理念。
-2. 从"星图待点亮节点列表"中，找出哪些节点与该书籍主旨有着高度的相关性。
-3. 门槛宁缺毋滥，如果相关性弱于 60%，请不要将节点算在内。一本书最多能点亮 4 个核心节点。
-4. 如果没有符合条件的节点，返回空数组。
-
-强制输出格式：
-严格以合法的 JSON 数组输出被点亮节点的 id，不需要任何其他文字（不需要代码块标记）：
-
-["node_x_y", "node_z_w"]`
-
-  try {
-    const response = await fetch(ZHIPU_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'glm-4.7',
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.1,
-        max_tokens: 8192,
-      }),
-    })
-
-    if (!response.ok) {
-      const errText = await response.text()
-      console.error('ZhiPu API error:', response.status, errText)
-      return res.status(502).json({ error: 'LLM API call failed', detail: errText })
-    }
-
-    const data = await response.json()
-    const content = data.choices?.[0]?.message?.content?.trim()
-    if (!content) return res.status(502).json({ error: 'Empty LLM response' })
-
-    let litNodeIds: string[]
-    try {
-      litNodeIds = JSON.parse(content)
-    } catch {
-      const match = content.match(/\[[\s\S]*\]/)
-      if (!match) return res.status(502).json({ error: 'Invalid JSON from LLM', raw: content })
-      litNodeIds = JSON.parse(match[0])
-    }
-
-    const validIds = new Set(unlitNodes.map((n) => n.id))
-    const filtered = litNodeIds.filter((id: string) => validIds.has(id))
-
-    res.json({ litNodeIds: filtered })
-  } catch (err) {
-    console.error('map-book-nodes error:', err)
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
-
-const PORT = 3001
+const PORT = parseInt(process.env.PORT || '3001', 10)
 app.listen(PORT, () => {
-  console.log(`📡 Local API server running at http://localhost:${PORT}`)
+  console.log(`API server running on port ${PORT}`)
 })

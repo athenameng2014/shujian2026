@@ -2,7 +2,10 @@ import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
 import type { Book, Log, Topic, TopicBook } from '../types'
 import * as db from '../db'
-import { generateStarMap, mapBookNodes } from '../services/ai'
+import {
+  publishStarMapJob, pollStarMapJob,
+  publishBookNodesJob, pollBookNodesJob,
+} from '../services/ai'
 
 // 预设的代表色（莫兰迪底色 + 高饱和跳色混搭）
 const BOOK_COLORS = [
@@ -119,9 +122,7 @@ export const useLogStore = create<LogState>((set) => ({
 interface TopicState {
   topics: Topic[]
   topicBooks: TopicBook[]
-  /** Tracks ongoing AI operations */
   aiLoading: boolean
-  /** Last AI error message (cleared on next operation) */
   aiError: string | null
   loadTopics: () => Promise<void>
   loadTopicBooks: (topicId: string) => Promise<void>
@@ -132,11 +133,13 @@ interface TopicState {
   addBookToTopic: (topicId: string, bookId: string, status?: TopicBook['status']) => Promise<void>
   updateTopicBook: (tb: TopicBook) => Promise<void>
   removeBookFromTopic: (topicId: string, bookId: string) => Promise<void>
-  /** Re-generate star map for a topic that has no starMapData */
   regenerateStarMap: (topicId: string) => Promise<void>
+  /** Resume polling for a topic whose star-map job was interrupted */
+  resumeStarMapGeneration: (topicId: string) => Promise<void>
+  /** Resume polling for a book whose node-mapping job was interrupted */
+  resumeBookMapping: (topicId: string, bookId: string) => Promise<void>
 }
 
-// Track the current AI request so we can cancel it when a new one starts
 let currentAIController: AbortController | null = null
 
 function cancelPendingAI() {
@@ -163,27 +166,42 @@ export const useTopicStore = create<TopicState>((set, get) => ({
     const topicBooks = await db.getAllTopicBooks()
     set({ topicBooks })
   },
+
+  // ── Phase 1: Add Topic + Generate Star Map (async) ──
+
   addTopic: async (name, description): Promise<Topic> => {
     const topic: Topic = { id: uuid(), name, description, bookIds: [], createdAt: Date.now() }
     await db.saveTopic(topic)
     set((s) => ({ topics: [topic, ...s.topics] }))
 
-    // Phase 1: Call AI to generate star map
     cancelPendingAI()
     const controller = new AbortController()
     currentAIController = controller
     set({ aiLoading: true, aiError: null })
+
     try {
-      const starMapData = await generateStarMap(name, description, controller.signal)
-      topic.starMapData = starMapData
+      // Step 1: Publish job (returns in <1s)
+      const jobId = await publishStarMapJob(name, description)
+      topic.starMapJobId = jobId
       await db.saveTopic(topic)
       set((s) => ({
-        topics: s.topics.map((t) => (t.id === topic.id ? { ...t, starMapData } : t)),
+        topics: s.topics.map((t) => (t.id === topic.id ? { ...t, starMapJobId: jobId } : t)),
+      }))
+
+      // Step 2: Poll until done (1-3 min)
+      const starMapData = await pollStarMapJob(jobId, controller.signal)
+
+      // Step 3: Save result
+      topic.starMapData = starMapData
+      topic.starMapJobId = undefined
+      await db.saveTopic(topic)
+      set((s) => ({
+        topics: s.topics.map((t) => (t.id === topic.id ? { ...t, starMapData, starMapJobId: undefined } : t)),
         aiLoading: false,
         aiError: null,
       }))
     } catch (err) {
-      if (controller.signal.aborted) return topic // cancelled by newer request, don't update state
+      if (controller.signal.aborted) return topic
       console.error('Failed to generate star map:', err)
       set({ aiLoading: false, aiError: '星图生成失败，请重试' })
     } finally {
@@ -192,6 +210,7 @@ export const useTopicStore = create<TopicState>((set, get) => ({
 
     return topic
   },
+
   updateTopic: async (topic) => {
     await db.saveTopic(topic)
     set((s) => ({ topics: s.topics.map((t) => (t.id === topic.id ? topic : t)) }))
@@ -200,11 +219,13 @@ export const useTopicStore = create<TopicState>((set, get) => ({
     await db.deleteTopic(id)
     set((s) => ({ topics: s.topics.filter((t) => t.id !== id) }))
   },
+
+  // ── Phase 2: Add Book to Topic + Map Nodes (async) ──
+
   addBookToTopic: async (topicId, bookId, status = 'default') => {
     const tb: TopicBook = { topicId, bookId, status, litNodeIds: [] }
     await db.saveTopicBook(tb)
 
-    // Update topic.bookIds
     const topics = await db.getAllTopics()
     const topic = topics.find((t) => t.id === topicId)
     if (topic && !topic.bookIds.includes(bookId)) {
@@ -217,40 +238,46 @@ export const useTopicStore = create<TopicState>((set, get) => ({
       topics: s.topics.map((t) => t.id === topicId ? { ...t, bookIds: [...new Set([...t.bookIds, bookId])] } : t),
     }))
 
-    // Phase 2: Call AI to map book to nodes
+    // Publish book-node mapping job
     if (topic?.starMapData) {
       cancelPendingAI()
       const controller = new AbortController()
       currentAIController = controller
       set({ aiLoading: true, aiError: null })
       try {
-        // Find unlit or all nodes
         const allNodes: Array<{ id: string; name: string; description: string }> = []
         for (const cat of topic.starMapData.categories) {
           for (const node of cat.nodes) {
             allNodes.push({ id: node.id, name: node.name, description: node.description })
           }
         }
-
-        // Find the book info
         const books = await db.getAllBooks()
         const book = books.find((b) => b.id === bookId)
 
-        const litNodeIds = await mapBookNodes(
-          book?.title ?? '',
-          book?.author,
-          undefined, // book description not stored currently
-          allNodes,
-          controller.signal,
+        // Step 1: Publish job
+        const jobId = await publishBookNodesJob(
+          book?.title ?? '', book?.author, undefined, allNodes,
         )
 
-        // Update the TopicBook with litNodeIds
-        tb.litNodeIds = litNodeIds
+        // Save jobId
+        tb.mappingJobId = jobId
         await db.saveTopicBook(tb)
-
         set((s) => ({
           topicBooks: s.topicBooks.map((x) =>
-            (x.topicId === topicId && x.bookId === bookId) ? { ...x, litNodeIds } : x
+            (x.topicId === topicId && x.bookId === bookId) ? { ...x, mappingJobId: jobId } : x
+          ),
+        }))
+
+        // Step 2: Poll until done
+        const litNodeIds = await pollBookNodesJob(jobId, controller.signal)
+
+        // Step 3: Save result
+        tb.litNodeIds = litNodeIds
+        tb.mappingJobId = undefined
+        await db.saveTopicBook(tb)
+        set((s) => ({
+          topicBooks: s.topicBooks.map((x) =>
+            (x.topicId === topicId && x.bookId === bookId) ? { ...x, litNodeIds, mappingJobId: undefined } : x
           ),
           aiLoading: false,
           aiError: null,
@@ -264,6 +291,7 @@ export const useTopicStore = create<TopicState>((set, get) => ({
       }
     }
   },
+
   updateTopicBook: async (tb) => {
     await db.saveTopicBook(tb)
     set((s) => ({
@@ -273,7 +301,6 @@ export const useTopicStore = create<TopicState>((set, get) => ({
   removeBookFromTopic: async (topicId, bookId) => {
     await db.deleteTopicBook(topicId, bookId)
 
-    // Update topic.bookIds in DB
     const topics = await db.getAllTopics()
     const topic = topics.find((t) => t.id === topicId)
     if (topic) {
@@ -281,13 +308,11 @@ export const useTopicStore = create<TopicState>((set, get) => ({
       await db.saveTopic(topic)
     }
 
-    // Check if book should be fully deleted: no logs and not in any other topics
     const bookIdsWithLogs = await db.getBookIdsWithLogs()
     const usedInOtherTopic = topics.some((t) => t.id !== topicId && t.bookIds.includes(bookId))
 
     if (!bookIdsWithLogs.has(bookId) && !usedInOtherTopic) {
       await db.deleteBook(bookId)
-      // Update book store separately (books is not in TopicState)
       useBookStore.setState((s) => ({ books: s.books.filter((b) => b.id !== bookId) }))
       set((s) => ({
         topicBooks: s.topicBooks.filter((x) => !(x.topicId === topicId && x.bookId === bookId)),
@@ -300,6 +325,9 @@ export const useTopicStore = create<TopicState>((set, get) => ({
       }))
     }
   },
+
+  // ── Regenerate Star Map (async) ──
+
   regenerateStarMap: async (topicId) => {
     const topic = get().topics.find((t) => t.id === topicId)
     if (!topic) return
@@ -308,12 +336,21 @@ export const useTopicStore = create<TopicState>((set, get) => ({
     const controller = new AbortController()
     currentAIController = controller
     set({ aiLoading: true, aiError: null })
+
     try {
-      const starMapData = await generateStarMap(topic.name, topic.description, controller.signal)
-      topic.starMapData = starMapData
+      const jobId = await publishStarMapJob(topic.name, topic.description)
+      topic.starMapJobId = jobId
       await db.saveTopic(topic)
       set((s) => ({
-        topics: s.topics.map((t) => (t.id === topicId ? { ...t, starMapData } : t)),
+        topics: s.topics.map((t) => (t.id === topicId ? { ...t, starMapJobId: jobId } : t)),
+      }))
+
+      const starMapData = await pollStarMapJob(jobId, controller.signal)
+      topic.starMapData = starMapData
+      topic.starMapJobId = undefined
+      await db.saveTopic(topic)
+      set((s) => ({
+        topics: s.topics.map((t) => (t.id === topicId ? { ...t, starMapData, starMapJobId: undefined } : t)),
         aiLoading: false,
         aiError: null,
       }))
@@ -321,6 +358,81 @@ export const useTopicStore = create<TopicState>((set, get) => ({
       if (controller.signal.aborted) return
       console.error('Failed to regenerate star map:', err)
       set({ aiLoading: false, aiError: '星图生成失败，请重试' })
+    } finally {
+      if (currentAIController === controller) currentAIController = null
+    }
+  },
+
+  // ── Resume: pick up orphaned jobs after page reload ──
+
+  resumeStarMapGeneration: async (topicId) => {
+    const topic = get().topics.find((t) => t.id === topicId)
+    if (!topic?.starMapJobId || topic.starMapData) return
+
+    cancelPendingAI()
+    const controller = new AbortController()
+    currentAIController = controller
+    set({ aiLoading: true, aiError: null })
+
+    try {
+      const starMapData = await pollStarMapJob(topic.starMapJobId, controller.signal)
+      topic.starMapData = starMapData
+      topic.starMapJobId = undefined
+      await db.saveTopic(topic)
+      set((s) => ({
+        topics: s.topics.map((t) => (t.id === topicId ? { ...t, starMapData, starMapJobId: undefined } : t)),
+        aiLoading: false,
+        aiError: null,
+      }))
+    } catch (err) {
+      if (controller.signal.aborted) return
+      console.error('Resume star-map failed:', err)
+      // Job expired — clear stale jobId
+      topic.starMapJobId = undefined
+      await db.saveTopic(topic)
+      set((s) => ({
+        topics: s.topics.map((t) => (t.id === topicId ? { ...t, starMapJobId: undefined } : t)),
+        aiLoading: false,
+        aiError: '星图生成已过期，请重新生成',
+      }))
+    } finally {
+      if (currentAIController === controller) currentAIController = null
+    }
+  },
+
+  resumeBookMapping: async (topicId, bookId) => {
+    const tb = get().topicBooks.find((x) => x.topicId === topicId && x.bookId === bookId)
+    if (!tb?.mappingJobId || tb.litNodeIds.length > 0) return
+
+    cancelPendingAI()
+    const controller = new AbortController()
+    currentAIController = controller
+    set({ aiLoading: true, aiError: null })
+
+    try {
+      const litNodeIds = await pollBookNodesJob(tb.mappingJobId, controller.signal)
+      tb.litNodeIds = litNodeIds
+      tb.mappingJobId = undefined
+      await db.saveTopicBook(tb)
+      set((s) => ({
+        topicBooks: s.topicBooks.map((x) =>
+          (x.topicId === topicId && x.bookId === bookId) ? { ...x, litNodeIds, mappingJobId: undefined } : x
+        ),
+        aiLoading: false,
+        aiError: null,
+      }))
+    } catch (err) {
+      if (controller.signal.aborted) return
+      console.error('Resume book-mapping failed:', err)
+      tb.mappingJobId = undefined
+      await db.saveTopicBook(tb)
+      set((s) => ({
+        topicBooks: s.topicBooks.map((x) =>
+          (x.topicId === topicId && x.bookId === bookId) ? { ...x, mappingJobId: undefined } : x
+        ),
+        aiLoading: false,
+        aiError: '知识点映射已过期，请重试',
+      }))
     } finally {
       if (currentAIController === controller) currentAIController = null
     }

@@ -20,7 +20,7 @@ export default function TopicDetailPage() {
   const loadBooks = useBookStore((s) => s.load)
   const removeBook = useBookStore((s) => s.removeBook)
   const bookIdsWithLogs = useLogStore((s) => s.bookIdsWithLogs)
-  const { topics, topicBooks, aiLoading, aiError, loadTopics, loadTopicBooks, addBookToTopic, removeBookFromTopic, removeTopic, updateTopicBook, regenerateStarMap } = useTopicStore()
+  const { topics, topicBooks, aiLoading, aiError, loadTopics, loadTopicBooks, addBookToTopic, removeBookFromTopic, removeTopic, updateTopicBook, regenerateStarMap, resumeStarMapGeneration, resumeBookMapping } = useTopicStore()
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [showAddBook, setShowAddBook] = useState(false)
   const [showBookSearch, setShowBookSearch] = useState(false)
@@ -35,6 +35,21 @@ export default function TopicDetailPage() {
   }, [id, loadBooks, loadTopics, loadTopicBooks])
 
   const topic = topics.find((t) => t.id === id)
+
+  // Resume orphaned AI jobs (e.g. user refreshed during generation)
+  useEffect(() => {
+    if (!topic || !id) return
+    if (topic.starMapJobId && !topic.starMapData && !aiLoading) {
+      resumeStarMapGeneration(topic.id)
+    }
+    const pendingMappings = topicBooks.filter(
+      (tb) => tb.topicId === id && tb.mappingJobId && tb.litNodeIds.length === 0,
+    )
+    for (const tb of pendingMappings) {
+      if (!aiLoading) resumeBookMapping(id, tb.bookId)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topic?.id])
 
   const booksInTopic = useMemo(() => {
     if (!topic) return []
