@@ -84,11 +84,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'glm-4-flash',
+        model: 'glm-4.7',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.7,
         response_format: { type: 'json_object' },
-        max_tokens: 8192,
+        max_tokens: 16384,
       }),
     })
 

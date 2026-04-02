@@ -78,11 +78,11 @@ app.post('/api/generate-star-map', async (req, res) => {
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'glm-4-flash',
+        model: 'glm-4.7',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.7,
         response_format: { type: 'json_object' },
-        max_tokens: 8192,
+        max_tokens: 16384,
       }),
     })
 
@@ -250,10 +250,10 @@ ${nodesJson}
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'glm-4-flash',
+        model: 'glm-4.7',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.1,
-        max_tokens: 4096,
+        max_tokens: 8192,
       }),
     })
 
