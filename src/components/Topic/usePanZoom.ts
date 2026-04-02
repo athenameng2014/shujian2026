@@ -33,8 +33,6 @@ export function usePanZoom() {
     origX: number
     origY: number
   } | null>(null)
-  const wheelRef = useRef<{ active: boolean }>({ active: false })
-
   const updateTransform = useCallback((t: Transform) => {
     t.scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, t.scale))
     transformRef.current = t
@@ -44,6 +42,7 @@ export function usePanZoom() {
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
+    const element = el // non-null alias for closures
 
     // ── Touch handlers ──
     function handleTouchStart(e: TouchEvent) {
@@ -126,7 +125,7 @@ export function usePanZoom() {
       const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, t.scale + delta))
 
       // Zoom toward cursor position
-      const rect = el.getBoundingClientRect()
+      const rect = element.getBoundingClientRect()
       const cursorX = e.clientX - rect.left - rect.width / 2
       const cursorY = e.clientY - rect.top - rect.height / 2
 
@@ -138,18 +137,18 @@ export function usePanZoom() {
     }
 
     // Attach with passive: false so we can call preventDefault
-    el.addEventListener('touchstart', handleTouchStart, { passive: true })
-    el.addEventListener('touchmove', handleTouchMove, { passive: false })
-    el.addEventListener('touchend', handleTouchEnd, { passive: true })
-    el.addEventListener('touchcancel', handleTouchEnd, { passive: true })
-    el.addEventListener('wheel', handleWheel, { passive: false })
+    element.addEventListener('touchstart', handleTouchStart, { passive: true })
+    element.addEventListener('touchmove', handleTouchMove, { passive: false })
+    element.addEventListener('touchend', handleTouchEnd, { passive: true })
+    element.addEventListener('touchcancel', handleTouchEnd, { passive: true })
+    element.addEventListener('wheel', handleWheel, { passive: false })
 
     return () => {
-      el.removeEventListener('touchstart', handleTouchStart)
-      el.removeEventListener('touchmove', handleTouchMove)
-      el.removeEventListener('touchend', handleTouchEnd)
-      el.removeEventListener('touchcancel', handleTouchEnd)
-      el.removeEventListener('wheel', handleWheel)
+      element.removeEventListener('touchstart', handleTouchStart)
+      element.removeEventListener('touchmove', handleTouchMove)
+      element.removeEventListener('touchend', handleTouchEnd)
+      element.removeEventListener('touchcancel', handleTouchEnd)
+      element.removeEventListener('wheel', handleWheel)
     }
   }, [updateTransform])
 

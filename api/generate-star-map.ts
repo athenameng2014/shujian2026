@@ -1,4 +1,22 @@
-import type { StarMapData, KnowledgeCategory } from '../src/types'
+// Inline types (cannot import from ../src in Vercel API bundler)
+interface KnowledgeNode {
+  id: string
+  name: string
+  description: string
+  categoryIndex: number
+  linkedBookIds: string[]
+  recommendedBooks?: Array<{ title: string; author?: string }>
+}
+interface KnowledgeCategory {
+  name: string
+  color: string
+  nodes: KnowledgeNode[]
+}
+interface StarMapData {
+  topicName: string
+  topicId: string
+  categories: KnowledgeCategory[]
+}
 
 export const config = { runtime: 'edge' }
 

@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { useLogStore } from '../../store'
 import type { Log, Book } from '../../types'
 

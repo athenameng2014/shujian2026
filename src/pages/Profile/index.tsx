@@ -3,6 +3,7 @@ import html2canvas from 'html2canvas'
 import { useBookStore, useLogStore } from '../../store'
 
 export default function ProfilePage() {
+  const today = new Date()
   const books = useBookStore((s) => s.books)
   const loadBooks = useBookStore((s) => s.load)
   const { allLogs, loadAllLogs, bookIdsWithLogs, refreshBookIdsWithLogs } = useLogStore()

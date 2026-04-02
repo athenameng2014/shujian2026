@@ -163,7 +163,7 @@ export const useTopicStore = create<TopicState>((set, get) => ({
     const topicBooks = await db.getAllTopicBooks()
     set({ topicBooks })
   },
-  addTopic: async (name, description) => {
+  addTopic: async (name, description): Promise<Topic> => {
     const topic: Topic = { id: uuid(), name, description, bookIds: [], createdAt: Date.now() }
     await db.saveTopic(topic)
     set((s) => ({ topics: [topic, ...s.topics] }))
@@ -183,7 +183,7 @@ export const useTopicStore = create<TopicState>((set, get) => ({
         aiError: null,
       }))
     } catch (err) {
-      if (controller.signal.aborted) return // cancelled by newer request, don't update state
+      if (controller.signal.aborted) return topic // cancelled by newer request, don't update state
       console.error('Failed to generate star map:', err)
       set({ aiLoading: false, aiError: '星图生成失败，请重试' })
     } finally {
@@ -287,10 +287,11 @@ export const useTopicStore = create<TopicState>((set, get) => ({
 
     if (!bookIdsWithLogs.has(bookId) && !usedInOtherTopic) {
       await db.deleteBook(bookId)
+      // Update book store separately (books is not in TopicState)
+      useBookStore.setState((s) => ({ books: s.books.filter((b) => b.id !== bookId) }))
       set((s) => ({
         topicBooks: s.topicBooks.filter((x) => !(x.topicId === topicId && x.bookId === bookId)),
         topics: s.topics.map((t) => t.id === topicId ? { ...t, bookIds: t.bookIds.filter((id) => id !== bookId) } : t),
-        books: s.books.filter((b) => b.id !== bookId),
       }))
     } else {
       set((s) => ({

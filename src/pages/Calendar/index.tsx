@@ -22,7 +22,7 @@ export default function CalendarPage() {
   const [showBookSearch, setShowBookSearch] = useState(false)
   const [bookSearchDate, setBookSearchDate] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
-  const toastTimer = useRef<ReturnType<typeof setTimeout>>()
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   useEffect(() => {
     loadBooks()

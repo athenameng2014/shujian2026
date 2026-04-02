@@ -30,7 +30,7 @@ export default function TopicPage() {
       const topicBookIds = new Set(topic.bookIds)
       const booksInTopic = books.filter((b) => topicBookIds.has(b.id))
       const bookCount = booksInTopic.length
-      const doneCount = topicBooks.filter((tb) => tb.topicId === topic.id && (tb.status === 'finished' || tb.status === 'done')).length
+      const doneCount = topicBooks.filter((tb) => tb.topicId === topic.id && tb.status === 'finished').length
 
       const mapData = topic.starMapData
       let litNodeCount = 0
