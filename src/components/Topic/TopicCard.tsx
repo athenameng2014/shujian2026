@@ -14,7 +14,7 @@ interface Props {
   doneCount: number
   litNodeCount: number
   totalNodeCount: number
-  recentAchievement?: string
+  recentAchievements?: string[]
   colorIndex: number
   onClick: () => void
 }
@@ -43,7 +43,7 @@ export default function TopicCard({
   doneCount,
   litNodeCount,
   totalNodeCount,
-  recentAchievement,
+  recentAchievements,
   colorIndex,
   onClick,
 }: Props) {
@@ -108,15 +108,13 @@ export default function TopicCard({
           )}
         </div>
 
-        {/* Recent achievement */}
-        {recentAchievement && (
-          <div className="flex items-center gap-1.5 mt-2 ml-4">
-            <svg width="10" height="10" viewBox="0 0 12 12" fill={palette.dot} fillOpacity={0.7}>
-              <path d="M6 0l1.76 3.58L12 4.16 8.88 7.1l.74 4.34L6 9.36 2.38 11.44l.74-4.34L0 4.16l4.24-.58z" />
-            </svg>
-            <span className="text-[10px] text-text-secondary">
-              最近解锁：<span className="font-medium" style={{ color: palette.dot }}>{recentAchievement}</span>
-            </span>
+        {/* Recent achievements */}
+        {recentAchievements && recentAchievements.length > 0 && (
+          <div className="flex items-center gap-1.5 mt-2 ml-4 flex-wrap">
+            <span className="text-[10px] font-medium" style={{ color: palette.dot }}>最近解锁</span>
+            {recentAchievements.map((name, i) => (
+              <span key={i} className="text-[10px] px-1.5 py-0.5 rounded-full font-medium" style={{ backgroundColor: palette.dot + '18', color: palette.dot }}>{name}</span>
+            ))}
           </div>
         )}
       </div>

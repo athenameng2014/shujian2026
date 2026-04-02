@@ -22,15 +22,19 @@ export interface Topic {
   description?: string
   bookIds: string[]
   createdAt: number
+  /** AI 生成的星图数据（Phase 1） */
+  starMapData?: StarMapData
 }
 
-export type BookStatus = 'want' | 'reading' | 'done'
+export type BookStatus = 'default' | 'reading' | 'finished'
 
 export interface TopicBook {
   topicId: string
   bookId: string
   status: BookStatus
   insight?: string
+  /** AI 判定该书点亮的节点 ID（Phase 2） */
+  litNodeIds: string[]
 }
 
 // ── Knowledge Star Map ──
@@ -40,12 +44,12 @@ export interface KnowledgeNode {
   name: string
   description: string
   categoryIndex: number
-  /** Mock book IDs that unlock this node */
-  bookIds: string[]
-  recommendedBook?: {
+  /** Mock book IDs that contribute to this concept (many-to-many) */
+  linkedBookIds: string[]
+  recommendedBooks?: Array<{
     title: string
     author?: string
-  }
+  }>
 }
 
 export interface KnowledgeCategory {

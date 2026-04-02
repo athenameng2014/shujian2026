@@ -1,7 +1,6 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { searchBooks, type BookSearchResult } from '../../services/googleBooks'
-import { useBookStore, useLogStore } from '../../store'
-import type { Book } from '../../types'
+import { useBookStore } from '../../store'
 
 interface Props {
   open: boolean
@@ -28,17 +27,23 @@ export default function BookSearch({ open, onClose, onBookSelect }: Props) {
   const [searched, setSearched] = useState(false)
   const [manualMode, setManualMode] = useState(false)
   const [manualTitle, setManualTitle] = useState('')
+  const [manualAuthor, setManualAuthor] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
   const [localCover, setLocalCover] = useState<Blob | null>(null)
   const [localPreview, setLocalPreview] = useState<string | null>(null)
   const addBook = useBookStore((s) => s.addBook)
-  const books = useBookStore((s) => s.books)
-  const bookIdsWithLogs = useLogStore((s) => s.bookIdsWithLogs)
 
-  // 只展示有打卡记录的书，按创建时间倒序，最多8本
-  const recentBooks = books
-    .filter((b) => bookIdsWithLogs.has(b.id))
-    .slice(0, 8)
+  // Auto-focus search input when modal opens
+  useEffect(() => {
+    if (open) {
+      // Small delay to let the sheet animation settle
+      const timer = setTimeout(() => {
+        inputRef.current?.focus()
+      }, 300)
+      return () => clearTimeout(timer)
+    }
+  }, [open])
 
   const doSearch = useCallback(async () => {
     if (!query.trim()) return
@@ -52,13 +57,16 @@ export default function BookSearch({ open, onClose, onBookSelect }: Props) {
     }
   }, [query])
 
-  const handleSelectExisting = (book: Book) => {
-    onBookSelect(book.id)
-    resetAndClose()
-  }
-
   const handleCreateAndSelect = async (title: string, author?: string, coverUrl?: string, coverBlob?: Blob) => {
-    const book = await addBook({ title, author, coverUrl, coverBlob })
+    // If coverUrl is from our proxy, fetch it as blob for persistent storage (data URL)
+    let blob = coverBlob
+    if (!blob && coverUrl) {
+      try {
+        const imgRes = await fetch(coverUrl)
+        if (imgRes.ok) blob = await imgRes.blob()
+      } catch { /* ignore */ }
+    }
+    const book = await addBook({ title, author, coverBlob: blob })
     onBookSelect(book.id)
     resetAndClose()
   }
@@ -76,6 +84,7 @@ export default function BookSearch({ open, onClose, onBookSelect }: Props) {
     setSearched(false)
     setManualMode(false)
     setManualTitle('')
+    setManualAuthor('')
     setLocalCover(null)
     setLocalPreview(null)
     onClose()
@@ -91,34 +100,12 @@ export default function BookSearch({ open, onClose, onBookSelect }: Props) {
         style={{ maxHeight: '90dvh', paddingBottom: 'calc(1.5rem + env(safe-area-inset-bottom, 0px))' }}
       >
         <div className="w-10 h-1 rounded-full bg-border mx-auto mb-4" />
-        <h3 className="text-lg font-semibold text-text mb-4">选择书籍</h3>
+        <h3 className="text-lg font-semibold text-text mb-4">添加新书籍</h3>
 
-        {/* Existing books quick pick */}
-        {recentBooks.length > 0 && (
-          <div className="mb-4">
-            <p className="text-xs text-text-secondary mb-2 font-medium">最近阅读</p>
-            <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-none">
-              {recentBooks.map((book) => (
-                <button
-                  key={book.id}
-                  onClick={() => handleSelectExisting(book)}
-                  className="flex-shrink-0 flex items-center gap-2 px-3 py-2 rounded-2xl bg-bg border border-border/60 active:scale-95 transition-transform"
-                >
-                  {book.coverUrl ? (
-                    <img src={book.coverUrl} alt="" className="w-7 h-10 object-cover rounded" />
-                  ) : (
-                    <BookPlaceholder letter={book.title[0]} className="w-7 h-10 text-[9px]" />
-                  )}
-                  <span className="text-sm text-text max-w-[80px] truncate">{book.title}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Search input — only search on button click or Enter */}
+        {/* Search input */}
         <div className="flex gap-2 mb-4">
           <input
+            ref={inputRef}
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -139,7 +126,7 @@ export default function BookSearch({ open, onClose, onBookSelect }: Props) {
           </button>
         </div>
 
-        {/* Results */}
+        {/* Search results */}
         {searched && !searching && results.length === 0 && (
           <div className="text-center py-4 mb-3">
             <p className="text-sm text-text-secondary">未找到相关书籍</p>
@@ -150,7 +137,7 @@ export default function BookSearch({ open, onClose, onBookSelect }: Props) {
           <div className="space-y-1.5 mb-4">
             {results.map((r, i) => (
               <button
-                key={`${r.source}-${i}`}
+                key={`google-${i}`}
                 onClick={() => handleCreateAndSelect(r.title, r.author, r.coverUrl)}
                 className="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl active:bg-bg active:scale-[0.98] transition-all text-left"
               >
@@ -192,6 +179,13 @@ export default function BookSearch({ open, onClose, onBookSelect }: Props) {
               placeholder="输入书名"
               className="w-full px-4 py-2.5 rounded-2xl bg-bg border border-border/60 text-sm text-text placeholder:text-text-secondary/50 outline-none focus:border-coral/50 focus:ring-2 focus:ring-coral/10 transition-all"
             />
+            <input
+              type="text"
+              value={manualAuthor}
+              onChange={(e) => setManualAuthor(e.target.value)}
+              placeholder="输入作者（选填）"
+              className="w-full px-4 py-2.5 rounded-2xl bg-bg border border-border/60 text-sm text-text placeholder:text-text-secondary/50 outline-none focus:border-coral/50 focus:ring-2 focus:ring-coral/10 transition-all"
+            />
             <div className="flex gap-3 items-center">
               <button
                 onClick={() => fileRef.current?.click()}
@@ -207,7 +201,7 @@ export default function BookSearch({ open, onClose, onBookSelect }: Props) {
               )}
             </div>
             <button
-              onClick={() => handleCreateAndSelect(manualTitle, undefined, undefined, localCover ?? undefined)}
+              onClick={() => handleCreateAndSelect(manualTitle, manualAuthor.trim() || undefined, undefined, localCover ?? undefined)}
               disabled={!manualTitle.trim()}
               className="w-full py-3 rounded-2xl text-white text-sm font-medium disabled:opacity-40 active:scale-95 transition-transform"
               style={{ background: 'linear-gradient(135deg, #E8654A, #E5A93D)' }}

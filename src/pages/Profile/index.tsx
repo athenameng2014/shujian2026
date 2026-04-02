@@ -5,19 +5,16 @@ import { useBookStore, useLogStore } from '../../store'
 export default function ProfilePage() {
   const books = useBookStore((s) => s.books)
   const loadBooks = useBookStore((s) => s.load)
-  const { logs, loadMonth, bookIdsWithLogs, refreshBookIdsWithLogs } = useLogStore()
+  const { allLogs, loadAllLogs, bookIdsWithLogs, refreshBookIdsWithLogs } = useLogStore()
   const [showPersonality, setShowPersonality] = useState(false)
   const [sharing, setSharing] = useState(false)
   const cardRef = useRef<HTMLDivElement>(null)
 
-  const today = new Date()
-  const yearMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
-
   useEffect(() => {
     loadBooks()
-    loadMonth(yearMonth)
+    loadAllLogs()
     refreshBookIdsWithLogs()
-  }, [loadBooks, loadMonth, refreshBookIdsWithLogs, yearMonth])
+  }, [loadBooks, loadAllLogs, refreshBookIdsWithLogs])
 
   // 过滤：只展示有打卡记录的书
   const activeBooks = useMemo(
@@ -25,21 +22,21 @@ export default function ProfilePage() {
     [books, bookIdsWithLogs]
   )
 
-  // Stats
+  // Stats — use allLogs for cumulative totals
   const totalBooks = activeBooks.length
-  const totalLogs = logs.length
-  const uniqueDays = new Set(logs.map((l) => l.date)).size
+  const totalLogs = allLogs.length
+  const uniqueDays = new Set(allLogs.map((l) => l.date)).size
 
   // Top books by log count
   const topBooks = useMemo(() => {
     const countMap = new Map<string, number>()
-    logs.forEach((l) => countMap.set(l.bookId, (countMap.get(l.bookId) ?? 0) + 1))
+    allLogs.forEach((l) => countMap.set(l.bookId, (countMap.get(l.bookId) ?? 0) + 1))
     return activeBooks
       .map((b) => ({ ...b, logCount: countMap.get(b.id) ?? 0 }))
       .filter((b) => b.logCount > 0)
       .sort((a, b) => b.logCount - a.logCount)
       .slice(0, 3)
-  }, [activeBooks, logs])
+  }, [activeBooks, allLogs])
 
   // Color distribution
   const colorStats = useMemo(() => {
@@ -194,7 +191,7 @@ export default function ProfilePage() {
                       <div key={book.id} className="flex items-center gap-2">
                         <span className="text-xs font-bold text-text-secondary w-4">{i + 1}</span>
                         <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: book.color }} />
-                        <span className="text-sm text-text truncate flex-1">{book.title}</span>
+                        <span className="text-sm text-text truncate flex-1">{book.title}{book.author ? <span className="text-text-secondary"> · {book.author}</span> : ''}</span>
                         <span className="text-[11px] text-text-secondary">{book.logCount}次</span>
                       </div>
                     ))}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useBookStore, useLogStore, useTopicStore } from '../../store'
 import MonthView from '../../components/Calendar/MonthView'
 import BookSearch from '../../components/Book/BookSearch'
@@ -17,8 +17,12 @@ export default function CalendarPage() {
   const [month, setMonth] = useState(today.getMonth())
   const yearMonth = `${year}-${String(month + 1).padStart(2, '0')}`
 
+  // Modal states — mutually exclusive: activeDate vs showBookSearch
   const [activeDate, setActiveDate] = useState<string | null>(null)
   const [showBookSearch, setShowBookSearch] = useState(false)
+  const [bookSearchDate, setBookSearchDate] = useState<string | null>(null)
+  const [toast, setToast] = useState<string | null>(null)
+  const toastTimer = useRef<ReturnType<typeof setTimeout>>()
 
   useEffect(() => {
     loadBooks()
@@ -26,23 +30,56 @@ export default function CalendarPage() {
     refreshBookIdsWithLogs()
   }, [loadBooks, loadMonth, refreshBookIdsWithLogs, yearMonth])
 
+  // Auto-hide toast
+  useEffect(() => {
+    if (toast) {
+      if (toastTimer.current) clearTimeout(toastTimer.current)
+      toastTimer.current = setTimeout(() => setToast(null), 2000)
+    }
+    return () => { if (toastTimer.current) clearTimeout(toastTimer.current) }
+  }, [toast])
+
+  const showToast = useCallback((msg: string) => setToast(msg), [])
+
   const dateLogs: Log[] = activeDate ? logs.filter((l) => l.date === activeDate) : []
 
+  // Calendar date click → open CheckInModal
   const handleDateClick = useCallback((date: string) => {
     setActiveDate(date)
   }, [])
 
-  const handleAddBook = useCallback((bookId: string) => {
+  // CheckInModal: user picked a book → direct check-in
+  const handleCheckIn = useCallback(async (bookId: string) => {
     if (!activeDate) return
-    addLog({ bookId, date: activeDate }).then(() => loadMonth(yearMonth))
+    await addLog({ bookId, date: activeDate })
+    loadMonth(yearMonth)
+    setActiveDate(null)
+    showToast('打卡成功')
+  }, [activeDate, addLog, loadMonth, yearMonth, showToast])
+
+  // CheckInModal: open BookSearch (close CheckInModal first!)
+  const handleOpenBookSearch = useCallback(() => {
+    const date = activeDate
+    setActiveDate(null)              // close CheckInModal completely
+    setBookSearchDate(date)          // remember the date
+    setShowBookSearch(true)          // then open BookSearch
+  }, [activeDate])
+
+  // BookSearch: book selected → create book if needed + check-in
+  const handleBookSearchSelect = useCallback(async (bookId: string) => {
+    if (bookSearchDate) {
+      await addLog({ bookId, date: bookSearchDate })
+      loadMonth(yearMonth)
+    }
     setShowBookSearch(false)
-  }, [activeDate, addLog, loadMonth, yearMonth])
+    setBookSearchDate(null)
+    showToast('打卡成功')
+  }, [bookSearchDate, addLog, loadMonth, yearMonth, showToast])
 
   const handleRemoveLog = useCallback(async (logId: string) => {
     const log = logs.find((l) => l.id === logId)
     await removeLog(logId)
     await loadMonth(yearMonth)
-    // 清理孤儿书：无打卡记录的书自动删除
     if (log && !bookIdsWithLogs.has(log.bookId)) {
       removeBook(log.bookId)
       topics.filter((t) => t.bookIds.includes(log.bookId)).forEach((t) => {
@@ -51,10 +88,12 @@ export default function CalendarPage() {
     }
   }, [logs, removeLog, loadMonth, yearMonth, removeBook, topics, removeBookFromTopic, bookIdsWithLogs])
 
-  const handleAddNote = useCallback((bookId: string, note?: string) => {
-    if (!activeDate) return
-    addLog({ bookId, date: activeDate, note }).then(() => loadMonth(yearMonth))
-  }, [activeDate, addLog, loadMonth, yearMonth])
+  // Quick check-in from monthly book list
+  const handleQuickCheckIn = useCallback(async (bookId: string) => {
+    await addLog({ bookId, date: todayStr })
+    loadMonth(yearMonth)
+    showToast('打卡成功')
+  }, [addLog, loadMonth, yearMonth, showToast])
 
   const prevMonth = () => {
     if (month === 0) { setYear((y) => y - 1); setMonth(11) } else setMonth((m) => m - 1)
@@ -71,9 +110,8 @@ export default function CalendarPage() {
   const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
   const monthNames = ['一月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '十一月', '十二月']
 
-  const handleOpenBookSearch = useCallback(() => {
-    setShowBookSearch(true)
-  }, [])
+  // 是否当前真实月份
+  const isCurrentMonth = year === today.getFullYear() && month === today.getMonth()
 
   // 本月书单列表（按打卡频次排序）
   const readingBooks = useMemo(() => {
@@ -135,8 +173,7 @@ export default function CalendarPage() {
         <div className="mt-8">
           <div className="flex items-center gap-2 mb-4">
             <span className="w-2 h-2 rounded-full bg-ocean" />
-            <h2 className="text-sm font-semibold text-text">本月书单</h2>
-            <span className="text-xs text-text-secondary ml-auto">{readingBooks.length} 本</span>
+            <h2 className="text-sm font-semibold text-text">{isCurrentMonth ? '本月书单' : `${monthNames[month]}书单`}</h2>
           </div>
           {readingBooks.length === 0 ? (
             <div className="text-center py-8 rounded-2xl bg-surface/50">
@@ -162,8 +199,18 @@ export default function CalendarPage() {
                   )}
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-text truncate">{item.book.title}</p>
-                    <p className="text-[11px] text-text-secondary">{item.logCount} 次打卡</p>
+                    <p className="text-[11px] text-text-secondary">{item.book.author ? `${item.book.author} · ` : ''}{item.logCount} 次打卡</p>
                   </div>
+                  {/* Quick check-in button — only for current month */}
+                  {isCurrentMonth && (
+                    <button
+                      onClick={() => handleQuickCheckIn(item.book.id)}
+                      className="px-2.5 py-1 rounded-lg text-xs font-medium active:scale-95 transition-transform flex-shrink-0"
+                      style={{ color: item.book.color, backgroundColor: item.book.color + '18' }}
+                    >
+                      打卡
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -171,36 +218,31 @@ export default function CalendarPage() {
         </div>
       </div>
 
-      {/* CheckIn Modal */}
+      {/* CheckIn Modal — only when activeDate is set */}
       <CheckInModal
         open={!!activeDate}
         date={activeDate ?? ''}
         logs={dateLogs}
         books={books}
-        onClose={() => { setActiveDate(null); setShowBookSearch(false) }}
-        onAdd={handleAddNote}
+        onClose={() => setActiveDate(null)}
+        onAdd={handleCheckIn}
         onRemove={handleRemoveLog}
         onOpenBookSearch={handleOpenBookSearch}
       />
 
-      {/* Book Search (z-index higher than CheckInModal) */}
+      {/* Book Search — mutually exclusive with CheckInModal */}
       <BookSearch
         open={showBookSearch}
-        onClose={() => setShowBookSearch(false)}
-        onBookSelect={handleAddBook}
+        onClose={() => { setShowBookSearch(false); setBookSearchDate(null) }}
+        onBookSelect={handleBookSearchSelect}
       />
 
-      {/* Floating check-in button */}
-      <button
-        onClick={() => { setActiveDate(todayStr); setShowBookSearch(true) }}
-        className="fixed right-5 bottom-36 w-14 h-14 rounded-full flex items-center justify-center active:scale-90 transition-transform z-40 shadow-lg"
-        style={{ background: 'linear-gradient(135deg, #E8654A 0%, #E5A93D 100%)' }}
-      >
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round">
-          <line x1="12" y1="5" x2="12" y2="19" />
-          <line x1="5" y1="12" x2="19" y2="12" />
-        </svg>
-      </button>
+      {/* Toast */}
+      {toast && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[70] px-5 py-2.5 rounded-full bg-text/90 text-white text-sm font-medium shadow-lg animate-fade-in">
+          {toast}
+        </div>
+      )}
     </div>
   )
 }

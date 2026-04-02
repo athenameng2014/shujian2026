@@ -8,15 +8,12 @@ interface Props {
   logs: Log[]
   books: Book[]
   onClose: () => void
-  onAdd: (bookId: string, note?: string) => void
+  onAdd: (bookId: string) => void
   onRemove: (logId: string) => void
   onOpenBookSearch: () => void
 }
 
 export default function CheckInModal({ open, date, logs, books, onClose, onAdd, onRemove, onOpenBookSearch }: Props) {
-  const [note, setNote] = useState('')
-  const [showNote, setShowNote] = useState(false)
-  const [pendingBookId, setPendingBookId] = useState<string | null>(null)
   const bookIdsWithLogs = useLogStore((s) => s.bookIdsWithLogs)
 
   if (!open) return null
@@ -24,16 +21,12 @@ export default function CheckInModal({ open, date, logs, books, onClose, onAdd, 
   const bookMap = new Map(books.map((b) => [b.id, b]))
   const dateLabel = formatLabel(date)
 
-  const handleConfirm = () => {
-    if (pendingBookId) onAdd(pendingBookId, note.trim() || undefined)
-    setNote('')
-    setShowNote(false)
-    setPendingBookId(null)
-  }
+  // 已打卡的书不再出现在快速选择中
+  const loggedBookIds = new Set(logs.map((l) => l.bookId))
+  const quickPickBooks = books.filter((b) => !loggedBookIds.has(b.id) && bookIdsWithLogs.has(b.id))
 
   const handlePickBook = (bookId: string) => {
-    setPendingBookId(bookId)
-    setShowNote(true)
+    onAdd(bookId)
   }
 
   return (
@@ -81,54 +74,43 @@ export default function CheckInModal({ open, date, logs, books, onClose, onAdd, 
           </div>
         )}
 
-        {/* Quick pick from existing books */}
-        {books.length > 0 && !showNote && (
+        {/* Quick pick from existing books — click to directly check in */}
+        {quickPickBooks.length > 0 && (
           <div className="mb-5">
             <p className="text-xs text-text-secondary mb-2 font-medium">快速选择</p>
-            <div className="flex gap-2.5 overflow-x-auto pb-2 -mx-1 px-1 scrollbar-none">
-              {books.filter((b) => !logs.some((l) => l.bookId === b.id) && bookIdsWithLogs.has(b.id)).map((book) => (
+            <div className="flex gap-3.5 overflow-x-auto pb-2 -mx-1 px-1 scrollbar-none">
+              {quickPickBooks.map((book) => (
                 <button
                   key={book.id}
                   onClick={() => handlePickBook(book.id)}
-                  className="flex-shrink-0 flex items-center gap-2 px-3 py-2 rounded-2xl bg-bg border border-border/60 active:scale-95 transition-transform"
+                  className="flex-shrink-0 flex flex-col items-center active:scale-95 transition-transform"
                 >
-                  <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: book.color }} />
-                  <span className="text-sm text-text max-w-[80px] truncate">{book.title}</span>
+                  <div className="w-[72px] h-[100px] rounded-lg overflow-hidden shadow-[0_4px_10px_rgba(0,0,0,0.05)]">
+                    {book.coverUrl ? (
+                      <img src={book.coverUrl} alt="" className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center" style={{ backgroundColor: book.color + '18' }}>
+                        <span className="text-xl font-bold" style={{ color: book.color }}>{book.title[0]}</span>
+                      </div>
+                    )}
+                  </div>
+                  <p className="mt-1.5 w-[72px] text-xs font-medium text-text text-left leading-tight line-clamp-2">
+                    {book.title}
+                  </p>
                 </button>
               ))}
             </div>
           </div>
         )}
 
-        {/* Add note before confirming */}
-        {showNote && pendingBookId ? (
-          <div className="space-y-3">
-            <p className="text-sm text-text-secondary">记录一点随想（选填）</p>
-            <textarea
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              placeholder="今天读到了..."
-              rows={2}
-              className="w-full px-4 py-3 rounded-2xl bg-bg border border-border/60 text-sm text-text placeholder:text-text-secondary/50 outline-none focus:border-berry/50 focus:ring-2 focus:ring-berry/10 resize-none transition-all"
-            />
-            <button
-              onClick={handleConfirm}
-              className="w-full py-3 rounded-2xl text-white text-sm font-medium active:scale-95 transition-transform"
-              style={{ background: 'linear-gradient(135deg, #9B5DE5, #C77DFF)' }}
-            >
-              完成
-            </button>
-          </div>
-        ) : (
-          /* Search for new books */
-          <button
-            onClick={onOpenBookSearch}
-            className="w-full py-3 rounded-2xl text-white text-sm font-medium active:scale-95 transition-transform"
-            style={{ background: 'linear-gradient(135deg, #E8654A, #E5A93D)' }}
-          >
-            搜索添加书籍
-          </button>
-        )}
+        {/* Search for new books */}
+        <button
+          onClick={onOpenBookSearch}
+          className="w-full py-3 rounded-2xl text-white text-sm font-medium active:scale-95 transition-transform"
+          style={{ background: 'linear-gradient(135deg, #E8654A, #E5A93D)' }}
+        >
+          搜索添加书籍
+        </button>
       </div>
     </div>
   )

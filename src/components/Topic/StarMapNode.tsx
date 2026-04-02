@@ -5,11 +5,14 @@ interface Props {
   x: number
   y: number
   isLit: boolean
+  /** Number of resolved books contributing to this node */
+  linkedBookCount: number
+  /** Category color for lit nodes (matches the zone ring) */
   color: string
   onClick: () => void
 }
 
-export default function StarMapNode({ node, x, y, isLit, color, onClick }: Props) {
+export default function StarMapNode({ node, x, y, isLit, linkedBookCount, color, onClick }: Props) {
   return (
     <g
       className="cursor-pointer"
@@ -27,6 +30,20 @@ export default function StarMapNode({ node, x, y, isLit, color, onClick }: Props
           fill={color}
           fillOpacity={0.1}
           className="star-node-glow"
+        />
+      )}
+
+      {/* Density ring: multi-book concepts */}
+      {isLit && linkedBookCount > 1 && (
+        <circle
+          cx={x}
+          cy={y}
+          r={12}
+          fill="none"
+          stroke={color}
+          strokeWidth={0.6}
+          strokeOpacity={0.2}
+          strokeDasharray="3 2"
         />
       )}
 

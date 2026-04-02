@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from 'react'
+import { useRef, useState, useCallback, useEffect } from 'react'
 
 interface Transform {
   x: number
@@ -7,52 +7,162 @@ interface Transform {
 }
 
 const MIN_SCALE = 0.5
-const MAX_SCALE = 2.5
+const MAX_SCALE = 3.0
 
+/**
+ * Pan/zoom hook with smart touch dispatch:
+ * - Single finger: page scrolls normally (no interception)
+ * - Two fingers: pinch-to-zoom + pan the map
+ * - Mouse wheel: zoom the map (desktop)
+ * - Clicks: pass through to children
+ *
+ * Uses native DOM events (not React synthetic) because we need { passive: false }
+ * to call preventDefault() on touchmove and wheel.
+ */
 export function usePanZoom() {
+  const containerRef = useRef<HTMLDivElement>(null)
   const [transform, setTransform] = useState<Transform>({ x: 0, y: 0, scale: 1 })
-  const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null)
-  const pinchRef = useRef<{ startDist: number; origScale: number } | null>(null)
 
-  const onPointerDown = useCallback((e: React.PointerEvent) => {
-    if (e.pointerType === 'mouse' || e.isPrimary) {
-      dragRef.current = { startX: e.clientX, startY: e.clientY, origX: transform.x, origY: transform.y }
+  // Use refs to avoid stale closures in event handlers
+  const transformRef = useRef<Transform>({ x: 0, y: 0, scale: 1 })
+  const pinchRef = useRef<{
+    startDist: number
+    origScale: number
+    startCx: number
+    startCy: number
+    origX: number
+    origY: number
+  } | null>(null)
+  const wheelRef = useRef<{ active: boolean }>({ active: false })
+
+  const updateTransform = useCallback((t: Transform) => {
+    t.scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, t.scale))
+    transformRef.current = t
+    setTransform(t)
+  }, [])
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+
+    // ── Touch handlers ──
+    function handleTouchStart(e: TouchEvent) {
+      if (e.touches.length >= 2) {
+        // Enter pinch mode: record initial distance and center
+        const t0 = e.touches[0]
+        const t1 = e.touches[1]
+        const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY)
+        const cx = (t0.clientX + t1.clientX) / 2
+        const cy = (t0.clientY + t1.clientY) / 2
+        const t = transformRef.current
+        pinchRef.current = {
+          startDist: dist,
+          origScale: t.scale,
+          startCx: cx,
+          startCy: cy,
+          origX: t.x,
+          origY: t.y,
+        }
+      }
     }
-  }, [transform.x, transform.y])
 
-  const onPointerMove = useCallback((e: React.PointerEvent) => {
-    if (dragRef.current) {
-      const dx = e.clientX - dragRef.current.startX
-      const dy = e.clientY - dragRef.current.startY
-      setTransform((t) => ({ ...t, x: dragRef.current!.origX + dx, y: dragRef.current!.origY + dy }))
+    function handleTouchMove(e: TouchEvent) {
+      // Single finger → do nothing, let browser handle page scroll
+      if (e.touches.length < 2) return
+
+      // Two+ fingers → intercept and drive map pan/zoom
+      e.preventDefault()
+      e.stopPropagation()
+
+      const pinch = pinchRef.current
+      if (!pinch) return
+
+      const t0 = e.touches[0]
+      const t1 = e.touches[1]
+      const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY)
+      const cx = (t0.clientX + t1.clientX) / 2
+      const cy = (t0.clientY + t1.clientY) / 2
+
+      const scaleRatio = dist / pinch.startDist
+      const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, pinch.origScale * scaleRatio))
+
+      // Pan: offset from initial center position
+      const dx = cx - pinch.startCx
+      const dy = cy - pinch.startCy
+
+      updateTransform({
+        x: pinch.origX + dx,
+        y: pinch.origY + dy,
+        scale: newScale,
+      })
     }
-  }, [])
 
-  const onPointerUp = useCallback(() => {
-    dragRef.current = null
-  }, [])
+    function handleTouchEnd(e: TouchEvent) {
+      // If still have 2+ fingers, recalculate the pinch baseline
+      if (e.touches.length >= 2) {
+        const t0 = e.touches[0]
+        const t1 = e.touches[1]
+        const t = transformRef.current
+        pinchRef.current = {
+          startDist: Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY),
+          origScale: t.scale,
+          startCx: (t0.clientX + t1.clientX) / 2,
+          startCy: (t0.clientY + t1.clientY) / 2,
+          origX: t.x,
+          origY: t.y,
+        }
+      } else {
+        // Fewer than 2 fingers → exit pinch mode
+        pinchRef.current = null
+      }
+    }
 
-  const onWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault()
-    const delta = e.deltaY > 0 ? -0.08 : 0.08
-    setTransform((t) => ({ ...t, scale: Math.min(MAX_SCALE, Math.max(MIN_SCALE, t.scale + delta)) }))
-  }, [])
+    // ── Wheel handler (desktop zoom) ──
+    function handleWheel(e: WheelEvent) {
+      e.preventDefault()
 
-  const onPointerCancel = useCallback(() => {
-    dragRef.current = null
-    pinchRef.current = null
-  }, [])
+      const delta = e.deltaY > 0 ? -0.08 : 0.08
+      const t = transformRef.current
+      const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, t.scale + delta))
 
+      // Zoom toward cursor position
+      const rect = el.getBoundingClientRect()
+      const cursorX = e.clientX - rect.left - rect.width / 2
+      const cursorY = e.clientY - rect.top - rect.height / 2
+
+      const scaleChange = newScale / t.scale
+      const newX = cursorX - scaleChange * (cursorX - t.x)
+      const newY = cursorY - scaleChange * (cursorY - t.y)
+
+      updateTransform({ x: newX, y: newY, scale: newScale })
+    }
+
+    // Attach with passive: false so we can call preventDefault
+    el.addEventListener('touchstart', handleTouchStart, { passive: true })
+    el.addEventListener('touchmove', handleTouchMove, { passive: false })
+    el.addEventListener('touchend', handleTouchEnd, { passive: true })
+    el.addEventListener('touchcancel', handleTouchEnd, { passive: true })
+    el.addEventListener('wheel', handleWheel, { passive: false })
+
+    return () => {
+      el.removeEventListener('touchstart', handleTouchStart)
+      el.removeEventListener('touchmove', handleTouchMove)
+      el.removeEventListener('touchend', handleTouchEnd)
+      el.removeEventListener('touchcancel', handleTouchEnd)
+      el.removeEventListener('wheel', handleWheel)
+    }
+  }, [updateTransform])
+
+  const reset = useCallback(() => {
+    updateTransform({ x: 0, y: 0, scale: 1 })
+  }, [updateTransform])
+
+  // Build the style for the SVG <g> transform wrapper
   const style: React.CSSProperties = {
     transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
     transformOrigin: 'center center',
-    transition: dragRef.current ? 'none' : 'transform 0.15s ease-out',
-    touchAction: 'none',
+    transition: pinchRef.current ? 'none' : 'transform 0.15s ease-out',
   }
 
-  return {
-    style,
-    handlers: { onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onWheel },
-    reset: () => setTransform({ x: 0, y: 0, scale: 1 }),
-  }
+  return { containerRef, transform, style, reset }
 }

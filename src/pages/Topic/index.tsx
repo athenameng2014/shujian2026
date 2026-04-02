@@ -1,61 +1,71 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTopicStore, useBookStore } from '../../store'
-import { getMockStarMapData } from '../../data/mockStarMap'
 import TopicCard from '../../components/Topic/TopicCard'
 
 export default function TopicPage() {
   const navigate = useNavigate()
   const books = useBookStore((s) => s.books)
   const loadBooks = useBookStore((s) => s.load)
-  const { topics, loadTopics, addTopic } = useTopicStore()
+  const { topics, topicBooks, loadTopics, loadAllTopicBooks, addTopic } = useTopicStore()
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState('')
   const [desc, setDesc] = useState('')
 
-  useEffect(() => { loadBooks(); loadTopics() }, [loadBooks, loadTopics])
+  useEffect(() => { loadBooks(); loadTopics(); loadAllTopicBooks() }, [loadBooks, loadTopics, loadAllTopicBooks])
 
   const handleCreate = async () => {
     if (!name.trim()) return
-    await addTopic(name.trim(), desc.trim() || undefined)
+    const topicName = name.trim()
+    const topicDesc = desc.trim() || undefined
     setName('')
     setDesc('')
     setShowCreate(false)
+    await addTopic(topicName, topicDesc)
   }
 
-  // Compute per-topic stats with mock star map data
+  // Compute per-topic stats using real starMapData + topicBook litNodeIds
   const topicStats = useMemo(() => {
     return topics.map((topic) => {
-      const bookCount = topic.bookIds.length
-      const doneCount = books.filter((b) => topic.bookIds.includes(b.id)).length
+      const topicBookIds = new Set(topic.bookIds)
+      const booksInTopic = books.filter((b) => topicBookIds.has(b.id))
+      const bookCount = booksInTopic.length
+      const doneCount = topicBooks.filter((tb) => tb.topicId === topic.id && (tb.status === 'finished' || tb.status === 'done')).length
 
-      const mapData = getMockStarMapData(topic.name)
+      const mapData = topic.starMapData
       let litNodeCount = 0
       let totalNodeCount = 0
-      let recentAchievement: string | undefined
+      let recentAchievements: string[] = []
 
       if (mapData) {
-        const topicBookIds = new Set(topic.bookIds)
         totalNodeCount = mapData.categories.reduce((s, c) => s + c.nodes.length, 0)
 
-        for (const cat of mapData.categories) {
-          for (const node of cat.nodes) {
-            // Check if any mock bookId resolves to a real book in this topic
-            const isLit = node.bookIds.length > 0 && node.bookIds.some((mockId) => {
-              // Simple mock resolution: check if any book in topic matches known mock titles
-              return books.some((b) => topicBookIds.has(b.id) && mockBookMatches(mockId, b.title))
-            })
-            if (isLit) {
-              litNodeCount++
-              recentAchievement = node.name
+        // Collect all lit node IDs from topicBooks
+        const topicTbs = topicBooks.filter((tb) => tb.topicId === topic.id)
+        const litIds = new Set<string>()
+        for (const tb of topicTbs) {
+          for (const nid of (tb.litNodeIds ?? [])) {
+            litIds.add(nid)
+          }
+        }
+        litNodeCount = litIds.size
+
+        // Collect recently lit node names (up to 4)
+        if (litIds.size > 0) {
+          for (const cat of mapData.categories) {
+            for (const node of cat.nodes) {
+              if (litIds.has(node.id)) {
+                recentAchievements.push(node.name)
+              }
             }
           }
+          recentAchievements = recentAchievements.slice(-4)
         }
       }
 
-      return { topic, bookCount, doneCount, litNodeCount, totalNodeCount, recentAchievement }
+      return { topic, bookCount, doneCount, litNodeCount, totalNodeCount, recentAchievements }
     })
-  }, [topics, books])
+  }, [topics, books, topicBooks])
 
   return (
     <div className="relative min-h-full">
@@ -88,7 +98,7 @@ export default function TopicPage() {
           </div>
         ) : (
           <div className="space-y-3">
-            {topicStats.map(({ topic, bookCount, doneCount, litNodeCount, totalNodeCount, recentAchievement }, idx) => (
+            {topicStats.map(({ topic, bookCount, doneCount, litNodeCount, totalNodeCount, recentAchievements }, idx) => (
               <TopicCard
                 key={topic.id}
                 topic={topic}
@@ -96,7 +106,7 @@ export default function TopicPage() {
                 doneCount={doneCount}
                 litNodeCount={litNodeCount}
                 totalNodeCount={totalNodeCount}
-                recentAchievement={recentAchievement}
+                recentAchievements={recentAchievements}
                 colorIndex={idx}
                 onClick={() => navigate(`/topic/${topic.id}`)}
               />
@@ -143,14 +153,4 @@ export default function TopicPage() {
       )}
     </div>
   )
-}
-
-/** Check if a mock book ID matches a real book title */
-const MOCK_BOOK_TITLES: Record<string, string> = {
-  'book-milk': '牛奶可乐经济学',
-}
-
-function mockBookMatches(mockId: string, bookTitle: string): boolean {
-  const keyword = MOCK_BOOK_TITLES[mockId]
-  return keyword ? bookTitle.includes(keyword) : false
 }

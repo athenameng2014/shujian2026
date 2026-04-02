@@ -26,6 +26,14 @@ export async function deleteBook(id: string): Promise<void> {
 }
 
 // ── Logs ──
+export async function getAllLogs(): Promise<Log[]> {
+  const logs: Log[] = []
+  await store.iterate<Log, void>((value, key) => {
+    if (key.startsWith('log:')) logs.push(value)
+  })
+  return logs.sort((a, b) => b.createdAt - a.createdAt)
+}
+
 export async function getLogsByDate(date: string): Promise<Log[]> {
   const logs: Log[] = []
   await store.iterate<Log, void>((value, key) => {
@@ -94,6 +102,14 @@ export async function deleteTopic(id: string): Promise<void> {
 }
 
 // ── TopicBooks ──
+export async function getAllTopicBooks(): Promise<TopicBook[]> {
+  const items: TopicBook[] = []
+  await store.iterate<TopicBook, void>((value, key) => {
+    if (key.startsWith('tb:')) items.push(value)
+  })
+  return items
+}
+
 export async function getTopicBooks(topicId: string): Promise<TopicBook[]> {
   const items: TopicBook[] = []
   await store.iterate<TopicBook, void>((value, key) => {

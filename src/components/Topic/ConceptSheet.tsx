@@ -1,16 +1,21 @@
 import type { KnowledgeNode } from '../../types'
 
+interface LinkedBook {
+  title: string
+  color: string
+  coverUrl?: string
+}
+
 interface Props {
   open: boolean
   node: KnowledgeNode | null
   isLit: boolean
   color: string
-  litByBook?: { title: string; color: string; coverUrl?: string } | null
+  linkedBooks: LinkedBook[]
   onClose: () => void
-  onAddToWant?: (bookTitle: string) => void
 }
 
-export default function ConceptSheet({ open, node, isLit, color, litByBook, onClose, onAddToWant }: Props) {
+export default function ConceptSheet({ open, node, isLit, color, linkedBooks, onClose }: Props) {
   if (!open || !node) return null
 
   return (
@@ -59,48 +64,60 @@ export default function ConceptSheet({ open, node, isLit, color, litByBook, onCl
           <p className="text-sm text-text leading-relaxed">{node.description}</p>
         </div>
 
-        {/* Lit state: show unlock info */}
-        {isLit && litByBook && (
-          <div
-            className="flex items-center gap-3 px-4 py-3 rounded-2xl border-l-[3px] mb-5"
-            style={{ borderLeftColor: litByBook.color, backgroundColor: litByBook.color + '08' }}
-          >
-            {litByBook.coverUrl ? (
-              <img src={litByBook.coverUrl} alt="" className="w-8 h-11 object-cover rounded-lg flex-shrink-0" />
-            ) : (
-              <span
-                className="w-8 h-11 rounded-lg flex-shrink-0 flex items-center justify-center text-white text-[10px] font-medium"
-                style={{ backgroundColor: litByBook.color }}
-              >
-                {litByBook.title[0]}
-              </span>
-            )}
-            <div>
-              <p className="text-xs text-text-secondary">你在阅读时解锁了此成就</p>
-              <p className="text-sm font-medium text-text mt-0.5">{litByBook.title}</p>
+        {/* Lit state: show all linked books */}
+        {isLit && linkedBooks.length > 0 && (
+          <div className="mb-5">
+            <p className="text-xs font-medium text-text-secondary mb-2.5">构筑此基石的阅读</p>
+            <div className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1 scrollbar-none">
+              {linkedBooks.map((book, i) => (
+                <div
+                  key={i}
+                  className="flex-shrink-0 flex items-center gap-2.5 px-3 py-2.5 rounded-2xl bg-bg"
+                >
+                  {book.coverUrl ? (
+                    <img src={book.coverUrl} alt="" className="w-7 h-10 object-cover rounded-lg flex-shrink-0" />
+                  ) : (
+                    <span
+                      className="w-7 h-10 rounded-lg flex-shrink-0 flex items-center justify-center text-white text-[10px] font-medium"
+                      style={{ backgroundColor: book.color }}
+                    >
+                      {book.title[0]}
+                    </span>
+                  )}
+                  <span className="text-xs font-medium text-text max-w-[72px] truncate">{book.title}</span>
+                </div>
+              ))}
             </div>
+            <p className="text-[11px] text-text-secondary mt-2">
+              是这 {linkedBooks.length} 本书帮你点亮了这个概念
+            </p>
           </div>
         )}
 
-        {/* Dim state: show recommendation */}
-        {!isLit && node.recommendedBook && (
+        {/* Dim state: show AI recommendations */}
+        {!isLit && node.recommendedBooks && node.recommendedBooks.length > 0 && (
           <div className="mb-5">
-            <p className="text-xs text-text-secondary mb-2.5">你尚未涉足此领域</p>
-            <div className="flex items-center gap-3 px-4 py-3 rounded-2xl bg-bg border border-border/60">
-              <div className="flex-1 min-w-0">
-                <p className="text-xs text-text-secondary mb-0.5">AI 推荐阅读</p>
-                <p className="text-sm font-medium text-text truncate">{node.recommendedBook.title}</p>
-                {node.recommendedBook.author && (
-                  <p className="text-[11px] text-text-secondary truncate">{node.recommendedBook.author}</p>
-                )}
-              </div>
-              <button
-                onClick={() => onAddToWant?.(node.recommendedBook!.title)}
-                className="flex-shrink-0 px-3 py-2 rounded-xl text-xs font-medium text-white active:scale-95 transition-transform"
-                style={{ background: `linear-gradient(135deg, ${color}, ${color}cc)` }}
-              >
-                加入想读
-              </button>
+            <p className="text-xs text-text-secondary mb-2.5">AI 推荐入门书单</p>
+            <div className="space-y-2">
+              {node.recommendedBooks.map((book, i) => (
+                <div key={i} className="flex items-center gap-3 px-4 py-3 rounded-2xl bg-bg border border-border/40">
+                  <div
+                    className="w-10 h-[54px] rounded-lg flex-shrink-0 flex items-center justify-center"
+                    style={{ backgroundColor: color + '14' }}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" fill={color + '20'} stroke={color} strokeWidth="1.5" />
+                      <line x1="8" y1="7" x2="16" y2="7" stroke={color} strokeWidth="1.2" strokeLinecap="round" />
+                      <line x1="8" y1="10.5" x2="14" y2="10.5" stroke={color + '60'} strokeWidth="1" strokeLinecap="round" />
+                      <line x1="8" y1="14" x2="12" y2="14" stroke={color + '40'} strokeWidth="1" strokeLinecap="round" />
+                    </svg>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-text leading-snug">{book.title}</p>
+                    {book.author && <p className="text-[11px] text-text-secondary mt-0.5">{book.author}</p>}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         )}
