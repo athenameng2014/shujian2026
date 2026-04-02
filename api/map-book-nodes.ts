@@ -1,6 +1,4 @@
-export const config = { runtime: 'edge' }
-
-const ZHIPU_API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
+import type { VercelRequest, VercelResponse } from '@vercel/node'
 
 interface UnlitNode {
   id: string
@@ -8,27 +6,27 @@ interface UnlitNode {
   description: string
 }
 
-export default async function handler(req: Request): Promise<Response> {
+const ZHIPU_API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405 })
+    return res.status(405).json({ error: 'Method not allowed' })
   }
 
-  let body: { bookTitle?: string; bookAuthor?: string; bookDescription?: string; unlitNodes?: UnlitNode[] }
-  try {
-    body = await req.json()
-  } catch {
-    return new Response(JSON.stringify({ error: 'Invalid JSON body' }), { status: 400 })
+  const { bookTitle, bookAuthor, bookDescription, unlitNodes } = req.body as {
+    bookTitle?: string
+    bookAuthor?: string
+    bookDescription?: string
+    unlitNodes?: UnlitNode[]
   }
-
-  const { bookTitle, bookAuthor, bookDescription, unlitNodes } = body
 
   if (!bookTitle || !unlitNodes?.length) {
-    return new Response(JSON.stringify({ error: 'bookTitle and unlitNodes are required' }), { status: 400 })
+    return res.status(400).json({ error: 'bookTitle and unlitNodes are required' })
   }
 
   const apiKey = process.env.ZHIPU_API_KEY
   if (!apiKey) {
-    return new Response(JSON.stringify({ error: 'ZHIPU_API_KEY not configured' }), { status: 500 })
+    return res.status(500).json({ error: 'ZHIPU_API_KEY not configured' })
   }
 
   const nodesJson = JSON.stringify(unlitNodes, null, 2)
@@ -53,71 +51,54 @@ ${nodesJson}
 
 ["node_x_y", "node_z_w"]`
 
-  // Use a streaming response to keep the connection alive
-  const encoder = new TextEncoder()
-  const stream = new ReadableStream({
-    async start(controller) {
-      try {
-        const response = await fetch(ZHIPU_API_URL, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model: 'glm-4.7',
-            messages: [{ role: 'user', content: prompt }],
-            temperature: 0.1,
-            max_tokens: 16384,
-          }),
-        })
+  try {
+    const response = await fetch(ZHIPU_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'glm-4-flash',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.1,
+        max_tokens: 4096,
+      }),
+    })
 
-        if (!response.ok) {
-          const errText = await response.text()
-          console.error('ZhiPu API error:', response.status, errText)
-          controller.enqueue(encoder.encode(JSON.stringify({ error: 'LLM API call failed', detail: errText })))
-          controller.close()
-          return
-        }
+    if (!response.ok) {
+      const errText = await response.text()
+      console.error('ZhiPu API error:', response.status, errText)
+      return res.status(502).json({ error: 'LLM API call failed', detail: errText })
+    }
 
-        const data = await response.json() as {
-          choices?: Array<{ message?: { content?: string } }>
-        }
-        const content = data.choices?.[0]?.message?.content?.trim()
-        if (!content) {
-          controller.enqueue(encoder.encode(JSON.stringify({ error: 'Empty LLM response' })))
-          controller.close()
-          return
-        }
+    const data = await response.json() as {
+      choices?: Array<{ message?: { content?: string } }>
+    }
+    const content = data.choices?.[0]?.message?.content?.trim()
+    if (!content) {
+      return res.status(502).json({ error: 'Empty LLM response' })
+    }
 
-        // Parse the lit node IDs from LLM response
-        let litNodeIds: string[]
-        try {
-          litNodeIds = JSON.parse(content)
-        } catch {
-          const match = content.match(/\[[\s\S]*\]/)
-          if (!match) {
-            controller.enqueue(encoder.encode(JSON.stringify({ error: 'Invalid JSON from LLM', raw: content })))
-            controller.close()
-            return
-          }
-          litNodeIds = JSON.parse(match[0])
-        }
-
-        // Validate: ensure all IDs exist in unlitNodes
-        const validIds = new Set(unlitNodes.map((n) => n.id))
-        const filtered = (litNodeIds as string[]).filter((id: string) => validIds.has(id))
-
-        controller.enqueue(encoder.encode(JSON.stringify({ litNodeIds: filtered })))
-      } catch (err) {
-        console.error('map-book-nodes error:', err)
-        controller.enqueue(encoder.encode(JSON.stringify({ error: 'Internal server error' })))
+    // Parse the lit node IDs from LLM response
+    let litNodeIds: string[]
+    try {
+      litNodeIds = JSON.parse(content)
+    } catch {
+      const match = content.match(/\[[\s\S]*\]/)
+      if (!match) {
+        return res.status(502).json({ error: 'Invalid JSON from LLM', raw: content })
       }
-      controller.close()
-    },
-  })
+      litNodeIds = JSON.parse(match[0])
+    }
 
-  return new Response(stream, {
-    headers: { 'Content-Type': 'application/json' },
-  })
+    // Validate: ensure all IDs exist in unlitNodes
+    const validIds = new Set(unlitNodes.map((n) => n.id))
+    const filtered = (litNodeIds as string[]).filter((id: string) => validIds.has(id))
+
+    return res.status(200).json({ litNodeIds: filtered })
+  } catch (err) {
+    console.error('map-book-nodes error:', err)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
 }

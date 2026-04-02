@@ -1,3 +1,5 @@
+import type { VercelRequest, VercelResponse } from '@vercel/node'
+
 // Inline types (cannot import from ../src in Vercel API bundler)
 interface KnowledgeNode {
   id: string
@@ -18,31 +20,22 @@ interface StarMapData {
   categories: KnowledgeCategory[]
 }
 
-export const config = { runtime: 'edge' }
-
 const ZHIPU_API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
 const CATEGORY_COLORS = ['#3D7C98', '#E8654A', '#9B5DE5', '#5B9E6F', '#E5A93D']
 
-export default async function handler(req: Request): Promise<Response> {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405 })
+    return res.status(405).json({ error: 'Method not allowed' })
   }
 
-  let body: { topicName?: string; description?: string }
-  try {
-    body = await req.json()
-  } catch {
-    return new Response(JSON.stringify({ error: 'Invalid JSON body' }), { status: 400 })
-  }
-
-  const { topicName, description } = body
+  const { topicName, description } = req.body as { topicName?: string; description?: string }
   if (!topicName) {
-    return new Response(JSON.stringify({ error: 'topicName is required' }), { status: 400 })
+    return res.status(400).json({ error: 'topicName is required' })
   }
 
   const apiKey = process.env.ZHIPU_API_KEY
   if (!apiKey) {
-    return new Response(JSON.stringify({ error: 'ZHIPU_API_KEY not configured' }), { status: 500 })
+    return res.status(500).json({ error: 'ZHIPU_API_KEY not configured' })
   }
 
   const prompt = `角色设定：
@@ -83,109 +76,92 @@ export default async function handler(req: Request): Promise<Response> {
   ]
 }`
 
-  // Use a streaming response to keep the connection alive (bypasses serverless function timeout)
-  const encoder = new TextEncoder()
-  const stream = new ReadableStream({
-    async start(controller) {
-      try {
-        const response = await fetch(ZHIPU_API_URL, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model: 'glm-4.7',
-            messages: [{ role: 'user', content: prompt }],
-            temperature: 0.7,
-            response_format: { type: 'json_object' },
-            max_tokens: 32768,
-          }),
-        })
+  try {
+    const response = await fetch(ZHIPU_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'glm-4-flash',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.7,
+        response_format: { type: 'json_object' },
+        max_tokens: 8192,
+      }),
+    })
 
-        if (!response.ok) {
-          const errText = await response.text()
-          console.error('ZhiPu API error:', response.status, errText)
-          controller.enqueue(encoder.encode(JSON.stringify({ error: 'LLM API call failed', detail: errText })))
-          controller.close()
-          return
+    if (!response.ok) {
+      const errText = await response.text()
+      console.error('ZhiPu API error:', response.status, errText)
+      return res.status(502).json({ error: 'LLM API call failed', detail: errText })
+    }
+
+    const data = await response.json() as {
+      choices?: Array<{
+        message?: {
+          content?: string
+          reasoning_content?: string
         }
+      }>
+    }
+    const content = data.choices?.[0]?.message?.content
+    if (!content) {
+      console.error('Empty content. Reasoning:', data.choices?.[0]?.message?.reasoning_content?.slice(0, 200))
+      return res.status(502).json({ error: 'Empty LLM response' })
+    }
 
-        const data = await response.json() as {
-          choices?: Array<{
-            message?: {
-              content?: string
-              reasoning_content?: string
-            }
-          }>
-        }
-        const content = data.choices?.[0]?.message?.content
-        if (!content) {
-          console.error('Empty content. Reasoning:', data.choices?.[0]?.message?.reasoning_content?.slice(0, 200))
-          controller.enqueue(encoder.encode(JSON.stringify({ error: 'Empty LLM response' })))
-          controller.close()
-          return
-        }
-
-        // Parse the LLM JSON output
-        let parsed: {
-          topic: string
-          sub_disciplines: Array<{
-            id: string
-            name: string
-            nodes: Array<{
-              id: string
-              name: string
-              description: string
-              recommended_books?: Array<{ title: string; author?: string }>
-            }>
-          }>
-        }
-        try {
-          parsed = JSON.parse(content)
-        } catch {
-          const jsonMatch = content.match(/\{[\s\S]*\}/)
-          if (!jsonMatch) {
-            controller.enqueue(encoder.encode(JSON.stringify({ error: 'Invalid JSON from LLM', raw: content })))
-            controller.close()
-            return
-          }
-          parsed = JSON.parse(jsonMatch[0])
-        }
-
-        // Transform to StarMapData
-        const categories: KnowledgeCategory[] = (parsed.sub_disciplines ?? []).map((sub, i) => ({
-          name: sub.name,
-          color: CATEGORY_COLORS[i % CATEGORY_COLORS.length],
-          nodes: (sub.nodes ?? []).map((node) => ({
-            id: node.id,
-            name: node.name,
-            description: node.description,
-            categoryIndex: i,
-            linkedBookIds: [],
-            recommendedBooks: node.recommended_books?.slice(0, 3) ?? [],
-          })),
-        }))
-
-        const starMapData: StarMapData = {
-          topicName: parsed.topic || topicName,
-          topicId: `ai-${Date.now()}`,
-          categories,
-        }
-
-        const totalNodes = categories.reduce((s, c) => s + c.nodes.length, 0)
-        console.log(`Star map generated: ${categories.length} categories, ${totalNodes} total nodes`)
-
-        controller.enqueue(encoder.encode(JSON.stringify({ starMapData })))
-      } catch (err) {
-        console.error('generate-star-map error:', err)
-        controller.enqueue(encoder.encode(JSON.stringify({ error: 'Internal server error' })))
+    // Parse the LLM JSON output
+    let parsed: {
+      topic: string
+      sub_disciplines: Array<{
+        id: string
+        name: string
+        nodes: Array<{
+          id: string
+          name: string
+          description: string
+          recommended_books?: Array<{ title: string; author?: string }>
+        }>
+      }>
+    }
+    try {
+      parsed = JSON.parse(content)
+    } catch {
+      const jsonMatch = content.match(/\{[\s\S]*\}/)
+      if (!jsonMatch) {
+        return res.status(502).json({ error: 'Invalid JSON from LLM', raw: content })
       }
-      controller.close()
-    },
-  })
+      parsed = JSON.parse(jsonMatch[0])
+    }
 
-  return new Response(stream, {
-    headers: { 'Content-Type': 'application/json' },
-  })
+    // Transform to StarMapData
+    const categories: KnowledgeCategory[] = (parsed.sub_disciplines ?? []).map((sub, i) => ({
+      name: sub.name,
+      color: CATEGORY_COLORS[i % CATEGORY_COLORS.length],
+      nodes: (sub.nodes ?? []).map((node) => ({
+        id: node.id,
+        name: node.name,
+        description: node.description,
+        categoryIndex: i,
+        linkedBookIds: [],
+        recommendedBooks: node.recommended_books?.slice(0, 3) ?? [],
+      })),
+    }))
+
+    const starMapData: StarMapData = {
+      topicName: parsed.topic || topicName,
+      topicId: `ai-${Date.now()}`,
+      categories,
+    }
+
+    const totalNodes = categories.reduce((s, c) => s + c.nodes.length, 0)
+    console.log(`Star map generated: ${categories.length} categories, ${totalNodes} total nodes`)
+
+    return res.status(200).json({ starMapData })
+  } catch (err) {
+    console.error('generate-star-map error:', err)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
 }

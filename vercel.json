@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "api/generate-star-map.ts": {
+      "maxDuration": 60
+    },
+    "api/map-book-nodes.ts": {
+      "maxDuration": 60
+    }
+  }
+}

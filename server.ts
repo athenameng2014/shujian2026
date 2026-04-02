@@ -6,7 +6,7 @@ import express from 'express'
 import dotenv from 'dotenv'
 import { Agent, setGlobalDispatcher } from 'undici'
 
-// Set a custom undici dispatcher with very long timeouts for slow AI responses (glm-4.7 thinking model)
+// Set a custom undici dispatcher with very long timeouts for slow AI responses
 setGlobalDispatcher(new Agent({
   headersTimeout: 600_000, // 10 minutes to receive headers
   bodyTimeout: 600_000,    // 10 minutes to receive full body
@@ -78,11 +78,11 @@ app.post('/api/generate-star-map', async (req, res) => {
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'glm-4.7',
+        model: 'glm-4-flash',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.7,
         response_format: { type: 'json_object' },
-        max_tokens: 32768,
+        max_tokens: 8192,
       }),
     })
 
@@ -250,10 +250,10 @@ ${nodesJson}
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'glm-4.7',
+        model: 'glm-4-flash',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.1,
-        max_tokens: 16384,
+        max_tokens: 4096,
       }),
     })
 
