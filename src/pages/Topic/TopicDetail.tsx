@@ -63,10 +63,11 @@ export default function TopicDetailPage() {
           status: normalizeStatus(tb?.status),
           insight: tb?.insight,
           litNodeIds: tb?.litNodeIds ?? [],
+          mappingJobId: tb?.mappingJobId,
         }
       })
       .filter(Boolean) as Array<
-        NonNullable<ReturnType<typeof books.find>> & { status: 'default' | 'reading' | 'finished'; insight?: string; litNodeIds: string[] }
+        NonNullable<ReturnType<typeof books.find>> & { status: 'default' | 'reading' | 'finished'; insight?: string; litNodeIds: string[]; mappingJobId?: string }
       >
   }, [topic, books, topicBooks])
 
