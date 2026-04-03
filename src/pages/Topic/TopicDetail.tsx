@@ -20,7 +20,7 @@ export default function TopicDetailPage() {
   const loadBooks = useBookStore((s) => s.load)
   const removeBook = useBookStore((s) => s.removeBook)
   const bookIdsWithLogs = useLogStore((s) => s.bookIdsWithLogs)
-  const { topics, topicBooks, aiLoading, aiError, loadTopics, loadTopicBooks, addBookToTopic, removeBookFromTopic, removeTopic, updateTopicBook, regenerateStarMap, resumeStarMapGeneration, resumeBookMapping } = useTopicStore()
+  const { topics, topicBooks, aiLoading, aiError, loadTopics, loadTopicBooks, addBookToTopic, removeBookFromTopic, removeTopic, updateTopicBook, regenerateStarMap, resumeStarMapGeneration, resumeBookMapping, remapBookNodes } = useTopicStore()
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [showAddBook, setShowAddBook] = useState(false)
   const [showBookSearch, setShowBookSearch] = useState(false)
@@ -301,6 +301,7 @@ export default function TopicDetailPage() {
             {booksInTopic.map((book) => {
               const concepts = bookConceptMap.get(book.id)
               const mappingAI = aiLoading && mapData && book.litNodeIds.length === 0
+              const mappingFailed = !aiLoading && mapData && book.litNodeIds.length === 0 && !book.mappingJobId
               const isFinished = book.status === 'finished'
               const isReading = book.status === 'reading'
               return (
@@ -329,6 +330,18 @@ export default function TopicDetailPage() {
                         <div className="w-2.5 h-2.5 rounded-full border-2 border-ocean/40 border-t-ocean animate-spin flex-shrink-0" />
                         <span className="text-[10px] text-ocean">AI 正在分析关联知识点...</span>
                       </div>
+                    )}
+                    {mappingFailed && (
+                      <button
+                        onClick={() => remapBookNodes(topic.id, book.id)}
+                        className="flex items-center gap-1.5 mt-2 text-[10px] text-coral active:scale-95 transition-transform"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="23 4 23 10 17 10" />
+                          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                        </svg>
+                        知识点关联失败，点击重试
+                      </button>
                     )}
                     {concepts && concepts.length > 0 && (
                       <div className="flex flex-wrap gap-1.5 mt-2">

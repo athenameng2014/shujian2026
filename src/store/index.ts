@@ -138,6 +138,8 @@ interface TopicState {
   resumeStarMapGeneration: (topicId: string) => Promise<void>
   /** Resume polling for a book whose node-mapping job was interrupted */
   resumeBookMapping: (topicId: string, bookId: string) => Promise<void>
+  /** Re-trigger book-node mapping for a failed book */
+  remapBookNodes: (topicId: string, bookId: string) => Promise<void>
 }
 
 let currentAIController: AbortController | null = null
@@ -285,7 +287,15 @@ export const useTopicStore = create<TopicState>((set, get) => ({
       } catch (err) {
         if (controller.signal.aborted) return
         console.error('Failed to map book nodes:', err)
-        set({ aiLoading: false, aiError: '知识点映射失败，请重试' })
+        tb.mappingJobId = undefined
+        await db.saveTopicBook(tb)
+        set((s) => ({
+          topicBooks: s.topicBooks.map((x) =>
+            (x.topicId === topicId && x.bookId === bookId) ? { ...x, mappingJobId: undefined } : x
+          ),
+          aiLoading: false,
+          aiError: '知识点映射失败，请重试',
+        }))
       } finally {
         if (currentAIController === controller) currentAIController = null
       }
@@ -432,6 +442,71 @@ export const useTopicStore = create<TopicState>((set, get) => ({
         ),
         aiLoading: false,
         aiError: '知识点映射已过期，请重试',
+      }))
+    } finally {
+      if (currentAIController === controller) currentAIController = null
+    }
+  },
+
+  remapBookNodes: async (topicId, bookId) => {
+    const topics = await db.getAllTopics()
+    const topic = topics.find((t) => t.id === topicId)
+    if (!topic?.starMapData) return
+
+    const tb = get().topicBooks.find((x) => x.topicId === topicId && x.bookId === bookId)
+    if (!tb) return
+
+    const books = await db.getAllBooks()
+    const book = books.find((b) => b.id === bookId)
+
+    cancelPendingAI()
+    const controller = new AbortController()
+    currentAIController = controller
+    set({ aiLoading: true, aiError: null })
+
+    try {
+      const allNodes: Array<{ id: string; name: string; description: string }> = []
+      for (const cat of topic.starMapData.categories) {
+        for (const node of cat.nodes) {
+          allNodes.push({ id: node.id, name: node.name, description: node.description })
+        }
+      }
+
+      const jobId = await publishBookNodesJob(
+        book?.title ?? '', book?.author, undefined, allNodes,
+      )
+
+      tb.mappingJobId = jobId
+      await db.saveTopicBook(tb)
+      set((s) => ({
+        topicBooks: s.topicBooks.map((x) =>
+          (x.topicId === topicId && x.bookId === bookId) ? { ...x, mappingJobId: jobId } : x
+        ),
+      }))
+
+      const litNodeIds = await pollBookNodesJob(jobId, controller.signal)
+
+      tb.litNodeIds = litNodeIds
+      tb.mappingJobId = undefined
+      await db.saveTopicBook(tb)
+      set((s) => ({
+        topicBooks: s.topicBooks.map((x) =>
+          (x.topicId === topicId && x.bookId === bookId) ? { ...x, litNodeIds, mappingJobId: undefined } : x
+        ),
+        aiLoading: false,
+        aiError: null,
+      }))
+    } catch (err) {
+      if (controller.signal.aborted) return
+      console.error('Remap book nodes failed:', err)
+      tb.mappingJobId = undefined
+      await db.saveTopicBook(tb)
+      set((s) => ({
+        topicBooks: s.topicBooks.map((x) =>
+          (x.topicId === topicId && x.bookId === bookId) ? { ...x, mappingJobId: undefined } : x
+        ),
+        aiLoading: false,
+        aiError: '知识点映射失败，请重试',
       }))
     } finally {
       if (currentAIController === controller) currentAIController = null
